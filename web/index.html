@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>台美科技股訊號雷達</title>
+<style>
+  :root {
+    --bg: #0b0f17; --panel: #121826; --panel2: #0e1420;
+    --line: #1f2a3d; --text: #e6ebf4; --muted: #8b97ab;
+    --accent: #4f8ef7; --up: #ef5350; --down: #26a69a;
+    --gold: #f2c14e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.6 "Noto Sans TC", system-ui, -apple-system, sans-serif;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 24px 16px 60px; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; margin-bottom: 6px; }
+  h1 { font-size: 22px; margin: 0; letter-spacing: .5px; }
+  .sub { color: var(--muted); font-size: 13px; }
+  .disclaimer {
+    background: #1a1206; border: 1px solid #3d2e0f; color: #d9b45b;
+    border-radius: 8px; padding: 8px 14px; font-size: 13px; margin: 14px 0 20px;
+  }
+  .tabs { display: flex; gap: 8px; margin-bottom: 14px; }
+  .tab {
+    padding: 8px 22px; border-radius: 8px 8px 0 0; cursor: pointer;
+    background: var(--panel2); border: 1px solid var(--line); border-bottom: none;
+    color: var(--muted); font-weight: 600; font-size: 15px;
+  }
+  .tab.active { background: var(--panel); color: var(--text); border-color: var(--accent); }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 0 10px 10px 10px; padding: 16px; }
+  .meta { display: flex; flex-wrap: wrap; gap: 14px; color: var(--muted); font-size: 13px; margin-bottom: 12px; align-items: center; }
+  .meta button {
+    background: var(--accent); color: #fff; border: 0; border-radius: 6px;
+    padding: 6px 16px; cursor: pointer; font-size: 13px; font-weight: 600;
+  }
+  .meta button:disabled { opacity: .5; cursor: wait; }
+  .tablebox { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; min-width: 760px; }
+  th, td { padding: 9px 10px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--muted); font-size: 12px; font-weight: 600; position: sticky; top: 0; background: var(--panel); }
+  td.l, th.l { text-align: left; }
+  .code { font-weight: 700; }
+  .name { color: var(--muted); font-size: 13px; }
+  .score { font-variant-numeric: tabular-nums; font-weight: 700; padding: 2px 10px; border-radius: 999px; display: inline-block; min-width: 44px; text-align: center; }
+  .s-hi { background: rgba(79,142,247,.18); color: #9cc0ff; }
+  .s-md { background: rgba(139,151,171,.14); color: #aeb9cc; }
+  .s-lo { background: rgba(139,151,171,.08); color: #77839a; }
+  .trig { color: var(--gold); font-weight: 700; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-start; }
+  .chip {
+    font-size: 12px; color: #a9c4f5; background: rgba(79,142,247,.10);
+    border: 1px solid rgba(79,142,247,.25); padding: 1px 8px; border-radius: 999px;
+  }
+  .notes { margin-top: 14px; color: var(--muted); font-size: 12.5px; }
+  .notes li { margin: 2px 0; }
+  .state { padding: 40px 0; text-align: center; color: var(--muted); }
+  .err { color: #ef8a80; }
+  .spin { display: inline-block; width: 18px; height: 18px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: r 0.8s linear infinite; vertical-align: -4px; margin-right: 8px; }
+  @keyframes r { to { transform: rotate(360deg); } }
+  footer { margin-top: 26px; color: #5d6a80; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>📡 台美科技股訊號雷達</h1>
+    <span class="sub">籌碼動能 × 相對估值 雙層過濾 · MVP v1</span>
+  </header>
+  <div class="disclaimer">
+    ⚠️ 本頁為研究與訊號產生工具,非投資建議、非自動下單系統。所有清單僅為候選訊號,進出場決策一律需人工複核。
+  </div>
+
+  <div class="tabs">
+    <div class="tab active" data-m="tw">🇹🇼 台股</div>
+    <div class="tab" data-m="us">🇺🇸 美股</div>
+  </div>
+
+  <div class="panel">
+    <div class="meta">
+      <span id="meta-asof"></span>
+      <span id="meta-universe"></span>
+      <span id="meta-gen"></span>
+      <button id="btn-reload">重新整理</button>
+    </div>
+    <div id="content"><div class="state"><span class="spin"></span>載入中…(首次計算約需數秒)</div></div>
+    <ul class="notes" id="notes"></ul>
+  </div>
+
+  <footer>
+    資料源:台灣證交所 OpenAPI(行情/三大法人/本益比)、Yahoo Finance(美股行情與估值)。
+    分數為 0–100 橫斷面百分位;★ = 達觸發門檻之候選訊號。結果由 CDN 快取約 30 分鐘。
+  </footer>
+</div>
+
+<script>
+const state = { market: "tw", cache: {} };
+
+const fmtPrice = (v) => v >= 1000 ? v.toLocaleString("en-US", {maximumFractionDigits: 0}) : (+v).toFixed(2);
+const cls = (s) => s >= 70 ? "s-hi" : s >= 40 ? "s-md" : "s-lo";
+
+function render(data) {
+  document.getElementById("meta-asof").textContent = "資料日:" + data.asOf;
+  document.getElementById("meta-universe").textContent = "掃描檔數:" + data.universeSize;
+  document.getElementById("meta-gen").textContent = "產生時間:" + new Date(data.generatedAt).toLocaleString("zh-TW", {hour12: false});
+  document.getElementById("notes").innerHTML = (data.notes || []).map(n => "<li>" + n + "</li>").join("");
+
+  if (!data.rows || !data.rows.length) {
+    document.getElementById("content").innerHTML = '<div class="state">今日無符合條件之標的(流動性/資料門檻過濾後為空)</div>';
+    return;
+  }
+  const head = `<tr>
+    <th class="l">#</th><th class="l">標的</th><th>收盤</th>
+    <th>籌碼分</th><th>估值分</th><th>總分</th><th class="l">觸發</th><th class="l">訊號原因</th></tr>`;
+  const rows = data.rows.map((r, i) => `<tr>
+    <td class="l">${i + 1}</td>
+    <td class="l"><span class="code">${r.code}</span> <span class="name">${r.name}</span></td>
+    <td>${fmtPrice(r.close)}</td>
+    <td><span class="score ${cls(r.chipScore)}">${r.chipScore}</span></td>
+    <td><span class="score ${cls(r.valScore)}">${r.valScore}</span></td>
+    <td><span class="score ${cls(r.totalScore)}">${r.totalScore}</span></td>
+    <td class="l">${r.triggered ? '<span class="trig">★ 候選</span>' : '<span style="color:#5d6a80">觀察</span>'}</td>
+    <td class="l"><div class="chips">${(r.reasons || []).map(x => '<span class="chip">' + x + "</span>").join("")}</div></td>
+  </tr>`).join("");
+  document.getElementById("content").innerHTML =
+    '<div class="tablebox"><table>' + head + rows + "</table></div>";
+}
+
+async function load(force) {
+  const m = state.market;
+  const box = document.getElementById("content");
+  const btn = document.getElementById("btn-reload");
+  if (!force && state.cache[m]) { render(state.cache[m]); return; }
+  btn.disabled = true;
+  box.innerHTML = '<div class="state"><span class="spin"></span>載入中…(即時抓取' + (m === "tw" ? "證交所" : "美股") + '資料並計算)</div>';
+  try {
+    const res = await fetch("/api/screen?market=" + m + (force ? "&t=" + Date.now() : ""));
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || "API 回傳失敗");
+    state.cache[m] = data;
+    render(data);
+  } catch (e) {
+    box.innerHTML = '<div class="state err">載入失敗:' + e.message + '<br>可能為資料源暫時無回應,請稍後按「重新整理」。</div>';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+document.querySelectorAll(".tab").forEach(t => t.addEventListener("click", () => {
+  document.querySelectorAll(".tab").forEach(x => x.classList.remove("active"));
+  t.classList.add("active");
+  state.market = t.dataset.m;
+  document.getElementById("notes").innerHTML = "";
+  load(false);
+}));
+document.getElementById("btn-reload").addEventListener("click", () => load(true));
+load(false);
+</script>
+</body>
+</html>

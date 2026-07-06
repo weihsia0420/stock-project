@@ -1,0 +1,15 @@
+{
+  "name": "stock-project",
+  "version": "1.0.0",
+  "private": true,
+  "description": "台美科技股主動選股與勝率追蹤模組 — MVP 網頁 + 研究框架",
+  "type": "module",
+  "scripts": {
+    "dev": "netlify dev",
+    "test": "node tests/scoring.test.mjs"
+  },
+  "devDependencies": {
+    "@netlify/functions": "^2.8.2",
+    "esbuild": "^0.28.1"
+  }
+}

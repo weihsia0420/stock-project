@@ -163,8 +163,9 @@ function rank(universe, pick) {
 export function buildTwSummary(r) {
   const lots = Math.round(r.netSum / 1000);
   const p = [];
-  // 基本面/題材(TWSE 月營收彙總:單月與累計年增率)
+  // 基本面/題材(TWSE 月營收彙總:單月與累計年增率;常見標的另有人工題材標籤)
   if (r.industry) p.push(`【${r.industry}】`);
+  if (r.theme) p.push(`${r.theme}。`);
   if (Number.isFinite(r.revYoY)) {
     p.push(
       `${r.revLabel ?? "最新"}單月營收年${r.revYoY >= 0 ? "增" : "減"}${Math.abs(r.revYoY).toFixed(1)}%` +

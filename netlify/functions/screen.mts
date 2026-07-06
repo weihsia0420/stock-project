@@ -1,13 +1,18 @@
-// 每日選股 API:/api/screen?market=tw|us
-// 資料源全為免費公開端點(TWSE OpenAPI / TWSE RWD / Yahoo Finance chart)。
-// 僅為研究用訊號清單,非投資建議;不做任何繞過 rate limit 的設計。
+// 每日選股 API:/api/screen?market=tw|us|etf&code=XXXX、/api/news?q=..&q2=..
+// 資料源全為免費公開端點(TWSE OpenAPI / TWSE RWD / Yahoo Finance / Google News RSS)。
+// TWSE www 端點有嚴格流量限制(約3請求/5秒):所有請求序列化+間隔,
+// 且整組資料集存 Netlify Blobs 共用快取,25分鐘內的重複請求(含查詢代號
+// 的不同快取鍵)不再回源。僅為研究用訊號清單,非投資建議。
 import type { Context, Config } from "@netlify/functions";
+import { getStore } from "@netlify/blobs";
 import { scoreTaiwan, scoreUS, scoreETF } from "./lib/scoring.mjs";
 
 const UA = {
   "User-Agent":
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
 };
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function fetchJson(url: string, init: RequestInit = {}, timeoutMs = 8000) {
   const res = await fetch(url, {
@@ -17,6 +22,12 @@ async function fetchJson(url: string, init: RequestInit = {}, timeoutMs = 8000) 
   });
   if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
   return res.json();
+}
+
+async function fetchText(url: string, timeoutMs = 8000) {
+  const res = await fetch(url, { headers: UA, signal: AbortSignal.timeout(timeoutMs) });
+  if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
+  return res.text();
 }
 
 function taipeiDate(offsetDays = 0): string {
@@ -29,7 +40,8 @@ const num = (s: unknown): number => {
   return Number.isFinite(n) ? n : NaN;
 };
 
-// ---------------- 台股 ----------------
+const mean = (a: number[]) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : NaN);
+
 /** 民國年月字串(如 11506)→ '2026/06' */
 function rocYmToLabel(ym: unknown): string | null {
   const s = String(ym ?? "").replace(/\D/g, "");
@@ -39,65 +51,185 @@ function rocYmToLabel(ym: unknown): string | null {
   return Number.isFinite(y) ? `${y}/${mm}` : null;
 }
 
-/** 去年最後交易日全市場收盤價(YTD基準)。失敗回傳空Map,前端顯示「—」。 */
-async function fetchPrevYearEndCloses(): Promise<Map<string, number>> {
-  const year = new Date(Date.now() + 8 * 3600_000).getUTCFullYear() - 1;
-  const settled = await Promise.allSettled(
-    ["1226", "1227", "1228", "1229", "1230", "1231"].map((md) =>
-      fetchJson(
-        `https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX?response=json&date=${year}${md}&type=ALLBUT0999`,
-        {}, 10000,
-      ).then((j) => ({ d: `${year}${md}`, j })),
-    ),
-  );
-  const oks = settled
-    .filter((s): s is PromiseFulfilledResult<any> => s.status === "fulfilled" && s.value.j?.stat === "OK")
-    .map((s) => s.value)
-    .sort((a, b) => a.d.localeCompare(b.d));
-  const latest = oks.at(-1);
-  const map = new Map<string, number>();
-  if (!latest) return map;
-  const tables = latest.j.tables ?? [latest.j];
-  const tbl = tables.find(
-    (t: any) => Array.isArray(t?.fields) && t.fields.includes("證券代號") && t.fields.includes("收盤價"),
-  );
-  if (!tbl) return map;
-  const iC = tbl.fields.indexOf("證券代號");
-  const iP = tbl.fields.indexOf("收盤價");
-  for (const row of tbl.data ?? []) {
-    const p = num(row[iP]);
-    if (p > 0) map.set(String(row[iC]).trim(), p);
+/** YTD%:序列最後一點 vs 去年最後一點(以timestamp判年份)。無去年資料回傳NaN。 */
+function ytdFrom(values: number[], ts: number[]): number {
+  if (!values.length || values.length !== ts.length) return NaN;
+  const nowYear = new Date().getUTCFullYear();
+  let baseIdx = -1;
+  for (let i = 0; i < ts.length; i++) {
+    if (new Date(ts[i] * 1000).getUTCFullYear() < nowYear) baseIdx = i;
+    else break;
   }
-  return map;
+  if (baseIdx < 0 || !(values[baseIdx] > 0)) return NaN;
+  return (values[values.length - 1] / values[baseIdx] - 1) * 100;
 }
 
-async function screenTaiwan(pick: string | null = null) {
-  // 1) 近12個日曆日的 T86(三大法人買賣超),取其中最近5個交易日
-  const t86Settled = await Promise.allSettled(
-    Array.from({ length: 12 }, (_, i) =>
-      fetchJson(
-        `https://www.twse.com.tw/rwd/zh/fund/T86?response=json&date=${taipeiDate(i)}&selectType=ALLBUT0999`,
-      ).then((j) => ({ date: taipeiDate(i), j })),
-    ),
-  );
-  const t86Days = t86Settled
-    .filter((r): r is PromiseFulfilledResult<{ date: string; j: any }> =>
-      r.status === "fulfilled" && r.value.j?.stat === "OK" && r.value.j?.data?.length,
-    )
-    .map((r) => r.value)
-    .sort((a, b) => a.date.localeCompare(b.date))
-    .slice(-5);
-  if (t86Days.length < 3) throw new Error("TWSE T86 資料不足(近12日僅取得" + t86Days.length + "日)");
+// ---------------- Netlify Blobs 共用快取 ----------------
+async function cachedJson<T>(key: string, ttlMs: number, fetcher: () => Promise<T>): Promise<T> {
+  let store: ReturnType<typeof getStore> | null = null;
+  try { store = getStore("market-cache"); } catch { /* 本地無blobs時直接回源 */ }
+  if (store) {
+    try {
+      const hit: any = await store.get(key, { type: "json" });
+      if (hit && Date.now() - hit.at < ttlMs) return hit.data as T;
+    } catch {}
+  }
+  const data = await fetcher();
+  if (store) { try { await store.setJSON(key, { at: Date.now(), data }); } catch {} }
+  return data;
+}
 
-  // 2) 當日行情、估值、月營收與去年底收盤(YTD基準)
+// ---------------- 台股題材標籤(常見權值/熱門股,人工整理;未收錄者顯示產業別) ----------------
+const TW_THEMES: Record<string, string> = {
+  "2330": "全球晶圓代工龍頭,先進製程與CoWoS先進封裝供不應求",
+  "2317": "電子代工龍頭,AI伺服器組裝(GB系列)與電動車布局",
+  "2454": "手機SoC龍頭,切入邊緣AI與雲端ASIC客製晶片",
+  "2308": "電源管理龍頭,AI資料中心電源與液冷散熱方案",
+  "2382": "AI伺服器主力組裝廠(雲端CSP大單)",
+  "3231": "AI伺服器代工與GPU運算板",
+  "6669": "超大規模資料中心白牌伺服器(Meta/微軟供應鏈)",
+  "2376": "AI伺服器與電競板卡",
+  "2377": "電競品牌與AI伺服器",
+  "2357": "PC品牌廠,AI PC與伺服器雙引擎",
+  "4938": "代工組裝與零組件(iPhone/伺服器)",
+  "2324": "NB代工與伺服器",
+  "2356": "伺服器與NB代工(AI伺服器L11)",
+  "3706": "伺服器代工與AI邊緣運算",
+  "3017": "散熱模組龍頭,AI伺服器氣冷+液冷",
+  "3324": "AI伺服器水冷板與散熱模組",
+  "3653": "均熱片與散熱基板(GPU供應鏈)",
+  "2059": "伺服器滑軌龍頭(機櫃導軌)",
+  "2301": "電源供應器與AI資料中心電源",
+  "2385": "電源供應器與鍵鼠模組",
+  "6409": "不斷電系統(UPS)隱形冠軍",
+  "2303": "成熟製程晶圓代工",
+  "3711": "封測龍頭,先進封裝與測試",
+  "3037": "ABF載板三雄之一,AI晶片載板",
+  "8046": "ABF載板,高階HPC應用",
+  "2368": "伺服器PCB(AI加速卡厚板)",
+  "2313": "HDI高密度板(手機/衛星)",
+  "6213": "CCL銅箔基板",
+  "2383": "高階CCL銅箔基板,AI伺服器M8等級用料",
+  "2379": "網通IC設計(交換器/WiFi)",
+  "3034": "面板驅動IC與SoC",
+  "2408": "DRAM記憶體(HBM題材外圍)",
+  "3443": "ASIC設計服務(台積電集團,AI晶片NRE)",
+  "3661": "高階ASIC設計服務,北美AI客戶",
+  "3529": "嵌入式記憶體IP(先進製程授權)",
+  "5269": "高速傳輸介面IC",
+  "6415": "電源管理IC",
+  "2345": "資料中心交換器(400G/800G)龍頭",
+  "3008": "手機光學鏡頭龍頭",
+  "3406": "光學鏡頭(VR/手機)",
+  "2409": "TFT面板",
+  "3481": "TFT面板",
+  "1513": "重電統包工程,台電強韌電網計畫",
+  "1519": "變壓器外銷美國,電網+AI資料中心供電",
+  "1504": "工業馬達與重電,機器人關節布局",
+  "1503": "重電變壓器與配電",
+  "2360": "半導體與電動車量測設備",
+  "3131": "先進封裝濕製程設備(CoWoS供應鏈)",
+  "3583": "半導體再生晶圓與設備",
+  "2049": "線性滑軌與滾珠螺桿(自動化/機器人)",
+  "1590": "氣動元件(自動化,中國市場)",
+  "2603": "貨櫃航運(長榮海運)",
+  "2609": "貨櫃航運",
+  "2615": "貨櫃航運(近洋線)",
+  "2618": "航空客貨運",
+  "2610": "航空客貨運",
+  "2002": "一貫化鋼廠龍頭",
+  "1101": "水泥本業+儲能/低碳轉型",
+  "1301": "塑化集團龍頭",
+  "1303": "塑化(電子級材料)",
+  "6505": "煉油與石化",
+  "1216": "食品飲料龍頭集團(統一超商/星巴克/家樂福母公司),內需防禦型",
+  "2912": "超商通路龍頭(7-ELEVEN)",
+  "2207": "汽車總代理龍頭(Toyota/Lexus)",
+  "2105": "輪胎(全球佈局)",
+  "9910": "運動鞋代工(Nike核心供應商)",
+  "9904": "製鞋代工與通路(寶勝)",
+  "2881": "金控(富邦,壽險+銀行)",
+  "2882": "金控(國泰,壽險龍頭)",
+  "2884": "金控(玉山,銀行為主)",
+  "2885": "金控(元大,證券龍頭)",
+  "2886": "金控(兆豐,官股外匯銀行)",
+  "2891": "金控(中信,銀行獲利王)",
+  "2892": "金控(第一,官股銀行)",
+  "5880": "金控(合庫,官股)",
+  "5871": "租賃龍頭(兩岸中小企業金融)",
+  "2412": "電信龍頭,防禦型高股息",
+  "3045": "電信三雄,資通訊整合",
+  "4904": "電信三雄,5G企業專網",
+  "2542": "營建開發商(雙北推案),資產題材與升息敏感",
+  "2545": "營建開發(北台灣豪宅)",
+  "9945": "營建與潤泰集團資產(南山人壽)",
+};
+
+// ---------------- 台股 ----------------
+/** T86 三大法人:由今日往回序列抓,湊滿5個交易日即停(www.twse流量限制嚴格,不可平行)。 */
+async function fetchT86Days(maxDays = 5) {
+  const days: { date: string; j: any }[] = [];
+  for (let i = 0; i < 12 && days.length < maxDays; i++) {
+    const date = taipeiDate(i);
+    try {
+      const j = await fetchJson(
+        `https://www.twse.com.tw/rwd/zh/fund/T86?response=json&date=${date}&selectType=ALLBUT0999`,
+        {}, 6000,
+      );
+      if (j?.stat === "OK" && j?.data?.length) days.push({ date, j });
+    } catch {}
+    if (days.length < maxDays && i < 11) await sleep(250);
+  }
+  return days.sort((a, b) => a.date.localeCompare(b.date));
+}
+
+/** 去年最後交易日全市場收盤(YTD基準)。整年不變 → blob 快取30天。 */
+async function fetchPrevYearEndCloses(): Promise<Record<string, number>> {
+  const year = new Date(Date.now() + 8 * 3600_000).getUTCFullYear() - 1;
+  return cachedJson(`prevye-${year}`, 30 * 86400_000, async () => {
+    const map: Record<string, number> = {};
+    for (const md of ["1231", "1230", "1229", "1228"]) {
+      try {
+        const j = await fetchJson(
+          `https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX?response=json&date=${year}${md}&type=ALLBUT0999`,
+          {}, 8000,
+        );
+        if (j?.stat === "OK") {
+          const tables = j.tables ?? [j];
+          const tbl = tables.find(
+            (t: any) => Array.isArray(t?.fields) && t.fields.includes("證券代號") && t.fields.includes("收盤價"),
+          );
+          if (tbl) {
+            const iC = tbl.fields.indexOf("證券代號");
+            const iP = tbl.fields.indexOf("收盤價");
+            for (const row of tbl.data ?? []) {
+              const p = num(row[iP]);
+              if (p > 0) map[String(row[iC]).trim()] = p;
+            }
+            if (Object.keys(map).length) return map;
+          }
+        }
+      } catch {}
+      await sleep(300);
+    }
+    return map;
+  });
+}
+
+/** 台股完整資料集(合併後的逐檔rows),blob 快取25分鐘。 */
+async function buildTwDataset() {
+  const prevYE = await fetchPrevYearEndCloses().catch(() => ({} as Record<string, number>));
+  const t86Days = await fetchT86Days();
+  if (t86Days.length < 3)
+    throw new Error(`TWSE T86 資料不足(近12日僅取得${t86Days.length}日,可能為證交所流量限制,請1-2分鐘後再試)`);
+
   let revErr: string | null = null;
-  const [priceAll, valAll, revAll, prevYE] = await Promise.all([
+  const [priceAll, valAll, revAll] = await Promise.all([
     fetchJson("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"),
     fetchJson("https://openapi.twse.com.tw/v1/exchangeReport/BWIBBU_ALL"),
     fetchJson("https://openapi.twse.com.tw/v1/opendata/t187ap05_L", {}, 12000).catch(
       (e) => { revErr = String(e?.message ?? e); return []; },
     ),
-    fetchPrevYearEndCloses().catch(() => new Map<string, number>()),
   ]);
 
   // 月營收 → 基本面亮點(欄位名以關鍵字模糊比對,防 API 欄名微調)
@@ -121,7 +253,7 @@ async function screenTaiwan(pick: string | null = null) {
     }
   }
 
-  // 3) 彙整逐檔法人買賣超序列(舊→新)
+  // 逐檔法人買賣超序列(舊→新)
   type Acc = { name: string; nets: number[]; foreignSum: number; trustSum: number };
   const chips = new Map<string, Acc>();
   t86Days.forEach(({ j }, dayIdx) => {
@@ -134,7 +266,7 @@ async function screenTaiwan(pick: string | null = null) {
     const iTrust = fields.findIndex((f: string) => f === "投信買賣超股數");
     for (const row of j.data) {
       const code = String(row[iCode]).trim();
-      if (!/^\d{4}$/.test(code)) continue; // 僅四碼普通股
+      if (!/^\d{4}$/.test(code)) continue;
       let acc = chips.get(code);
       if (!acc) {
         acc = { name: String(row[iName]).trim(), nets: new Array(t86Days.length).fill(0), foreignSum: 0, trustSum: 0 };
@@ -157,10 +289,12 @@ async function screenTaiwan(pick: string | null = null) {
     if (!acc) continue;
     const v = valMap.get(p.Code) ?? {};
     const f = revMap.get(p.Code) ?? {};
+    const base = prevYE[p.Code];
+    const close = num(p.ClosingPrice);
     rows.push({
       code: p.Code,
       name: p.Name || acc.name,
-      close: num(p.ClosingPrice),
+      close,
       volume: num(p.TradeVolume),
       turnover: num(p.TradeValue),
       nets: acc.nets,
@@ -170,23 +304,31 @@ async function screenTaiwan(pick: string | null = null) {
       pb: num(v.PBratio),
       dividendYield: num(v.DividendYield),
       industry: f.industry ?? null,
+      theme: TW_THEMES[p.Code] ?? null,
       revYoY: f.revYoY ?? NaN,
       revAccYoY: f.revAccYoY ?? NaN,
       revLabel: f.revLabel ?? null,
       revMapLoaded: revMap.size > 0,
-      ytd: (() => {
-        const base = prevYE.get(p.Code);
-        const c = num(p.ClosingPrice);
-        return base && base > 0 && c > 0 ? ((c / base) - 1) * 100 : NaN;
-      })(),
+      ytd: base && base > 0 && close > 0 ? ((close / base) - 1) * 100 : NaN,
     });
   }
 
-  const scored = scoreTaiwan(rows, { pick });
+  return {
+    asOf: t86Days[t86Days.length - 1].date,
+    rows,
+    revCount: revMap.size,
+    revErr,
+    prevYECount: Object.keys(prevYE).length,
+  };
+}
+
+async function screenTaiwan(pick: string | null = null) {
+  const ds = await cachedJson(`tw-dataset-${taipeiDate(0)}`, 25 * 60_000, buildTwDataset);
+  const scored = scoreTaiwan(ds.rows, { pick });
   return {
     market: "TW",
-    asOf: t86Days[t86Days.length - 1].date,
-    universeSize: rows.length,
+    asOf: ds.asOf,
+    universeSize: ds.rows.length,
     rows: scored.rows,
     picked: scored.picked,
     pickedError: pick && !scored.picked
@@ -195,11 +337,11 @@ async function screenTaiwan(pick: string | null = null) {
     notes: [
       "籌碼分數:外資+投信近5日連買天數×買超強度之橫斷面百分位",
       "估值分數:P/E 橫斷面便宜度70% + 殖利率排名30%(TWSE BWIBBU)",
-      revMap.size > 0
-        ? `基本面:TWSE 月營收彙總已載入 ${revMap.size} 家(公告期間未申報者摘要會註明),寫入智能摘要`
-        : `⚠ 月營收資料源未取得${revErr ? `(${revErr})` : ""},本次摘要缺基本面段落`,
-      prevYE.size > 0
-        ? `YTD 以去年最後交易日收盤為基準(${prevYE.size} 檔)`
+      ds.revCount > 0
+        ? `基本面:TWSE 月營收彙總已載入 ${ds.revCount} 家(公告期間未申報者摘要會註明);常見標的另有人工題材標籤`
+        : `⚠ 月營收資料源未取得${ds.revErr ? `(${ds.revErr})` : ""},本次摘要缺基本面段落`,
+      ds.prevYECount > 0
+        ? `YTD 以去年最後交易日收盤為基準(${ds.prevYECount} 檔)`
         : "⚠ 去年底收盤資料未取得,YTD 顯示為 —",
       "流動性門檻:當日成交金額≥3億;觸發定義:連買≥3日且5日買超佔量≥5%",
     ],
@@ -233,7 +375,6 @@ const US_THEMES: Record<string, string> = {
   NOW: "企業工作流程自動化AI", INTU: "財稅軟體導入AI",
   SHOP: "電商開店SaaS", UBER: "共享出行與自駕車隊合作",
 };
-
 const US_NAMES: Record<string, string> = {
   NVDA: "NVIDIA", AAPL: "Apple", MSFT: "Microsoft", GOOGL: "Alphabet",
   AMZN: "Amazon", META: "Meta", AVGO: "Broadcom", TSLA: "Tesla",
@@ -262,29 +403,13 @@ async function fetchChart(ticker: string) {
       ts.push(rawT[i] ?? 0);
     }
   }
-  return { ticker, closes, vols, ts, meta: r?.meta };
-}
-
-const mean = (a: number[]) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : NaN);
-
-/** YTD%:序列最後一點 vs 去年最後一點(以timestamp判年份)。無去年資料回傳NaN。 */
-function ytdFrom(values: number[], ts: number[]): number {
-  if (!values.length || values.length !== ts.length) return NaN;
-  const nowYear = new Date().getUTCFullYear();
-  let baseIdx = -1;
-  for (let i = 0; i < ts.length; i++) {
-    if (new Date(ts[i] * 1000).getUTCFullYear() < nowYear) baseIdx = i;
-    else break;
-  }
-  if (baseIdx < 0 || !(values[baseIdx] > 0)) return NaN;
-  return (values[values.length - 1] / values[baseIdx] - 1) * 100;
+  return { ticker, closes, vols, ts };
 }
 
 async function fetchYahooValuations(
   tickers: string[],
-): Promise<Map<string, { pe: number; epsGrowth: number }>> {
-  // Yahoo quote API 需 cookie+crumb;失敗時整層降級(估值中性50分)
-  const map = new Map<string, { pe: number; epsGrowth: number }>();
+): Promise<Record<string, { pe: number | null; epsGrowth: number | null }>> {
+  const map: Record<string, { pe: number | null; epsGrowth: number | null }> = {};
   try {
     const pre = await fetch("https://fc.yahoo.com", {
       headers: UA, signal: AbortSignal.timeout(6000),
@@ -305,15 +430,15 @@ async function fetchYahooValuations(
       const epsGrowth =
         q.epsForward > 0 && q.epsTrailingTwelveMonths > 0
           ? q.epsForward / q.epsTrailingTwelveMonths - 1
-          : NaN;
-      if (pe > 0 || Number.isFinite(epsGrowth))
-        map.set(q.symbol, { pe: pe > 0 ? pe : NaN, epsGrowth });
+          : null;
+      if (pe > 0 || epsGrowth != null)
+        map[q.symbol] = { pe: pe > 0 ? pe : null, epsGrowth };
     }
   } catch { /* 降級 */ }
   return map;
 }
 
-async function screenUS(pick: string | null = null) {
+async function buildUsDataset() {
   const settled = await Promise.allSettled(
     [...US_TICKERS, "SOXX"].map((t) => fetchChart(t)),
   );
@@ -325,11 +450,10 @@ async function screenUS(pick: string | null = null) {
   }
   const soxx = charts.get("SOXX");
   if (!soxx) throw new Error("Yahoo Finance chart 資料取得失敗(含基準SOXX)");
-  const soxxRet20 =
-    soxx.closes.at(-1)! / soxx.closes.at(-21)! - 1;
+  const soxxRet20 = soxx.closes.at(-1)! / soxx.closes.at(-21)! - 1;
 
   const vals = await fetchYahooValuations(US_TICKERS);
-  const valuationAvailable = vals.size >= 5;
+  const valuationAvailable = Object.keys(vals).length >= 5;
 
   const rows: any[] = [];
   for (const t of US_TICKERS) {
@@ -338,7 +462,7 @@ async function screenUS(pick: string | null = null) {
     const close = c.closes.at(-1)!;
     const ret20 = close / c.closes.at(-21)! - 1;
     const ma20 = mean(c.closes.slice(-20));
-    const v = vals.get(t);
+    const v = vals[t];
     rows.push({
       ticker: t,
       name: US_NAMES[t] ?? t,
@@ -350,16 +474,20 @@ async function screenUS(pick: string | null = null) {
       fwdPe: v?.pe ?? NaN,
       epsGrowth: v?.epsGrowth ?? NaN,
       theme: US_THEMES[t] ?? null,
-      ytd: ytdFrom(c.closes, (c as any).ts ?? []),
+      ytd: ytdFrom(c.closes, c.ts),
     });
   }
+  return { rows, valuationAvailable };
+}
 
-  const scored = scoreUS(rows, { valuationAvailable, pick });
+async function screenUS(pick: string | null = null) {
+  const ds = await cachedJson("us-dataset", 25 * 60_000, buildUsDataset);
+  const scored = scoreUS(ds.rows, { valuationAvailable: ds.valuationAvailable, pick });
   return {
     market: "US",
     asOf: new Date().toISOString().slice(0, 10),
-    universeSize: rows.length,
-    valuationDegraded: !valuationAvailable,
+    universeSize: ds.rows.length,
+    valuationDegraded: !ds.valuationAvailable,
     rows: scored.rows,
     picked: scored.picked,
     pickedError: pick && !scored.picked
@@ -367,10 +495,10 @@ async function screenUS(pick: string | null = null) {
       : null,
     notes: [
       "籌碼替代分數:相對SOXX 20日超額報酬60% + 5日/20日量能比40%(免費源無分點/內部人日頻資料)",
-      valuationAvailable
-        ? "估值分數:Forward P/E 橫斷面便宜度(Yahoo Finance)"
+      ds.valuationAvailable
+        ? "估值分數:Forward P/E 橫斷面便宜度;摘要含預估EPS成長與題材標籤(Yahoo Finance)"
         : "⚠ 估值源暫時不可用,本次估值層降級為中性50分",
-      "觸發定義:相對強於SOXX、站上20日均線、量能≥1.2x",
+      "觸發定義:相對強於SOXX、站上20日均線、量能≥1.2x;YTD以去年底收盤為基準",
     ],
   };
 }
@@ -421,7 +549,7 @@ async function fetchMonthlyAdj(yahoo: string): Promise<{ adj: number[]; ts: numb
   return { adj, ts };
 }
 
-async function screenETFs() {
+async function buildEtfDataset() {
   const settled = await Promise.allSettled(
     ETF_LIST.map(async (e) => {
       const { adj, ts } = await fetchMonthlyAdj(e.yahoo);
@@ -433,52 +561,93 @@ async function screenETFs() {
     .map((s) => s.value);
   if (rows.length < 5) throw new Error("ETF 歷史資料取得失敗(Yahoo Finance 無回應)");
   const failed = ETF_LIST.filter((e) => !rows.some((r: any) => r.code === e.code)).map((e) => e.code);
+  return { rows, failed };
+}
 
+async function screenETFs() {
+  const ds = await cachedJson("etf-dataset", 6 * 3600_000, buildEtfDataset);
   return {
     market: "ETF",
     asOf: new Date().toISOString().slice(0, 10),
-    universeSize: rows.length,
-    rows: scoreETF(rows, { threshold: 0.05 }),
+    universeSize: ds.rows.length,
+    rows: scoreETF(ds.rows, { threshold: 0.05 }),
     notes: [
       "年化報酬與YTD以還原股息之調整價(adjusted close)計算 = 含息總報酬;✓達標 = 年化報酬≥5%且成立滿3年",
       "排序:達標者優先,再依風險調整報酬(年化報酬÷年化波動)由高至低——「穩健」看的是這一欄,不是報酬絕對值",
       "近5年涵蓋2024多頭與2025回檔,數字已含一次完整循環;過去績效不保證未來報酬",
-      ...(failed.length ? [`⚠ 本次未能取得:${failed.join("、")}(資料源無回應)`] : []),
+      ...(ds.failed.length ? [`⚠ 本次未能取得:${ds.failed.join("、")}(資料源無回應)`] : []),
     ],
   };
 }
 
-// ---------------- 新聞題材(Yahoo Finance Search,多重備援) ----------------
-async function fetchNewsOnce(q: string, locale: boolean) {
-  const loc = locale ? "&lang=zh-Hant-TW&region=TW" : "";
-  const j = await fetchJson(
-    `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(q)}&newsCount=6&quotesCount=0${loc}`,
-    {}, 6000,
-  );
-  return (j?.news ?? []).slice(0, 6).map((n: any) => ({
-    title: n.title,
-    publisher: n.publisher,
-    link: n.link,
-    time: n.providerPublishTime ? new Date(n.providerPublishTime * 1000).toISOString() : null,
-  }));
+// ---------------- 新聞題材 ----------------
+/** Google News RSS(相關性佳,台股中文新聞主力來源)。 */
+function parseRss(xml: string) {
+  return [...xml.matchAll(/<item>([\s\S]*?)<\/item>/g)].map((m) => {
+    const g = (tag: string) => {
+      const mm = m[1].match(
+        new RegExp(`<${tag}[^>]*>(?:<!\\[CDATA\\[)?([\\s\\S]*?)(?:\\]\\]>)?</${tag}>`),
+      );
+      return mm ? mm[1].trim() : "";
+    };
+    const pub = g("pubDate");
+    return {
+      title: g("title").replace(/&amp;/g, "&").replace(/&#39;/g, "'").replace(/&quot;/g, '"'),
+      publisher: g("source").replace(/<[^>]+>/g, ""),
+      link: g("link"),
+      time: pub ? new Date(pub).toISOString() : null,
+    };
+  }).filter((n) => n.title && n.link).slice(0, 6);
 }
 
-/** 依序嘗試:q(含台灣locale,若為中文/台股代號)→ q 純參數 → q2 各組合。 */
+async function fetchGoogleNews(query: string, zh: boolean) {
+  const loc = zh ? "hl=zh-TW&gl=TW&ceid=TW:zh-Hant" : "hl=en-US&gl=US&ceid=US:en";
+  const xml = await fetchText(
+    `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&${loc}`, 6000,
+  );
+  return parseRss(xml);
+}
+
+/** Yahoo 搜尋新聞,以 relatedTickers 過濾確保與標的相關。 */
+async function fetchYahooNewsFiltered(symbol: string) {
+  const j = await fetchJson(
+    `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(symbol)}&newsCount=10&quotesCount=0`,
+    {}, 6000,
+  );
+  return (j?.news ?? [])
+    .filter((n: any) => (n.relatedTickers ?? []).includes(symbol))
+    .slice(0, 6)
+    .map((n: any) => ({
+      title: n.title,
+      publisher: n.publisher,
+      link: n.link,
+      time: n.providerPublishTime ? new Date(n.providerPublishTime * 1000).toISOString() : null,
+    }));
+}
+
+/** q: 代號(台股為 XXXX.TW)、q2: 中文名稱(台股)。 */
 async function fetchNews(q: string, q2: string | null) {
-  const attempts: [string, boolean][] = [];
-  for (const query of [q, q2].filter(Boolean) as string[]) {
-    const isTw = /[^\x00-\x7F]/.test(query) || /\.TW$/i.test(query);
-    if (isTw) attempts.push([query, true]);
-    attempts.push([query, false]);
+  const isTW = /\.TW$/i.test(q) || /[^\x00-\x7F]/.test(q2 ?? "");
+  if (isTW) {
+    const code = q.replace(/\.TW$/i, "");
+    const queries = [
+      q2 ? `"${q2}" ${code}` : code,   // 精確名稱+代號
+      q2 ? `${q2} 股` : `${code} 台股`, // 放寬
+    ];
+    for (const query of queries) {
+      try {
+        const n = await fetchGoogleNews(query, true);
+        if (n.length) return n;
+      } catch {}
+    }
+    try { return await fetchYahooNewsFiltered(q.toUpperCase()); } catch {}
+    return [];
   }
-  let lastErr: unknown = null;
-  for (const [query, locale] of attempts) {
-    try {
-      const news = await fetchNewsOnce(query, locale);
-      if (news.length) return news;
-    } catch (e) { lastErr = e; }
-  }
-  if (lastErr) throw lastErr;
+  try {
+    const n = await fetchYahooNewsFiltered(q.toUpperCase());
+    if (n.length) return n;
+  } catch {}
+  try { return await fetchGoogleNews(`${q} stock`, false); } catch {}
   return [];
 }
 
@@ -506,7 +675,7 @@ export default async (req: Request, _context: Context) => {
       : market === "etf" ? await screenETFs()
       : await screenTaiwan(pick);
     const cache = market === "etf"
-      ? "public, s-maxage=21600, stale-while-revalidate=86400" // ETF長期數據:快取6小時
+      ? "public, s-maxage=21600, stale-while-revalidate=86400"
       : headers["Netlify-CDN-Cache-Control"];
     return new Response(
       JSON.stringify({ ok: true, generatedAt: new Date().toISOString(), ...data }),

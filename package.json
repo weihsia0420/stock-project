@@ -11,5 +11,8 @@
   "devDependencies": {
     "@netlify/functions": "^2.8.2",
     "esbuild": "^0.28.1"
+  },
+  "dependencies": {
+    "@netlify/blobs": "^10.7.9"
   }
 }

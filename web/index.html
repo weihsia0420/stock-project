@@ -9,13 +9,14 @@
     --bg: #0b0f17; --panel: #121826; --panel2: #0e1420;
     --line: #1f2a3d; --text: #e6ebf4; --muted: #8b97ab;
     --accent: #4f8ef7; --gold: #f2c14e; --ok: #34c98e; --warn: #ef8a80;
+    --up: #ef5350; --down: #26a69a;
   }
   * { box-sizing: border-box; }
   body {
     margin: 0; background: var(--bg); color: var(--text);
     font: 15px/1.6 "Noto Sans TC", system-ui, -apple-system, sans-serif;
   }
-  .wrap { max-width: 1120px; margin: 0 auto; padding: 24px 16px 60px; }
+  .wrap { max-width: 1160px; margin: 0 auto; padding: 24px 16px 60px; }
   header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; margin-bottom: 6px; }
   h1 { font-size: 22px; margin: 0; letter-spacing: .5px; }
   .sub { color: var(--muted); font-size: 13px; }
@@ -37,39 +38,6 @@
     padding: 6px 16px; cursor: pointer; font-size: 13px; font-weight: 600;
   }
   .meta button:disabled { opacity: .5; cursor: wait; }
-  .hint { color: var(--muted); font-size: 12.5px; margin: 0 0 10px; }
-  .tablebox { overflow-x: auto; }
-  table { border-collapse: collapse; width: 100%; min-width: 780px; }
-  th, td { padding: 9px 10px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
-  th { color: var(--muted); font-size: 12px; font-weight: 600; position: sticky; top: 0; background: var(--panel); }
-  td.l, th.l { text-align: left; }
-  tr.row { cursor: pointer; }
-  tr.row:hover td { background: rgba(79,142,247,.05); }
-  .code { font-weight: 700; }
-  .name { color: var(--muted); font-size: 13px; }
-  .score { font-variant-numeric: tabular-nums; font-weight: 700; padding: 2px 10px; border-radius: 999px; display: inline-block; min-width: 44px; text-align: center; }
-  .s-hi { background: rgba(79,142,247,.18); color: #9cc0ff; }
-  .s-md { background: rgba(139,151,171,.14); color: #aeb9cc; }
-  .s-lo { background: rgba(139,151,171,.08); color: #77839a; }
-  .trig { color: var(--gold); font-weight: 700; }
-  .pass { color: var(--ok); font-weight: 700; }
-  .fail { color: #77839a; }
-  .chips { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-start; }
-  .chip {
-    font-size: 12px; color: #a9c4f5; background: rgba(79,142,247,.10);
-    border: 1px solid rgba(79,142,247,.25); padding: 1px 8px; border-radius: 999px;
-  }
-  tr.detail td {
-    background: var(--panel2); white-space: normal; text-align: left;
-    padding: 14px 18px; font-size: 14px;
-  }
-  .ai-title { color: var(--accent); font-weight: 700; font-size: 13px; margin-bottom: 4px; }
-  .ai-sum { color: #cdd6e4; margin-bottom: 12px; }
-  .news-title { color: var(--gold); font-weight: 700; font-size: 13px; margin-bottom: 4px; }
-  .news li { margin: 4px 0; font-size: 13.5px; }
-  .news a { color: #9cc0ff; text-decoration: none; }
-  .news a:hover { text-decoration: underline; }
-  .news .src { color: var(--muted); font-size: 12px; margin-left: 6px; }
   .searchbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; align-items: center; }
   .searchbar input[type="text"] {
     background: var(--panel2); border: 1px solid var(--line); color: var(--text);
@@ -86,6 +54,33 @@
     border-radius: 6px; padding: 7px 14px; cursor: pointer; font-size: 13px;
   }
   .xq-status { color: var(--muted); font-size: 12.5px; }
+  .hint { color: var(--muted); font-size: 12.5px; margin: 0 0 10px; }
+  .tablebox { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; min-width: 860px; }
+  th, td { padding: 9px 10px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--muted); font-size: 12px; font-weight: 600; position: sticky; top: 0; background: var(--panel); }
+  td.l, th.l { text-align: left; }
+  th.sortable { cursor: pointer; user-select: none; }
+  th.sortable:hover { color: var(--accent); }
+  th.sorted { color: var(--accent); }
+  tr.row { cursor: pointer; }
+  tr.row:hover td { background: rgba(79,142,247,.05); }
+  .code { font-weight: 700; }
+  .name { color: var(--muted); font-size: 13px; }
+  .up { color: var(--up); font-weight: 600; }
+  .down { color: var(--down); font-weight: 600; }
+  .score { font-variant-numeric: tabular-nums; font-weight: 700; padding: 2px 10px; border-radius: 999px; display: inline-block; min-width: 44px; text-align: center; }
+  .s-hi { background: rgba(79,142,247,.18); color: #9cc0ff; }
+  .s-md { background: rgba(139,151,171,.14); color: #aeb9cc; }
+  .s-lo { background: rgba(139,151,171,.08); color: #77839a; }
+  .trig { color: var(--gold); font-weight: 700; }
+  .pass { color: var(--ok); font-weight: 700; }
+  .fail { color: #77839a; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-start; }
+  .chip {
+    font-size: 12px; color: #a9c4f5; background: rgba(79,142,247,.10);
+    border: 1px solid rgba(79,142,247,.25); padding: 1px 8px; border-radius: 999px;
+  }
   .chip.xq-pos { color: var(--gold); background: rgba(242,193,78,.10); border-color: rgba(242,193,78,.35); }
   .chip.xq-neg { color: var(--warn); background: rgba(239,138,128,.08); border-color: rgba(239,138,128,.3); }
   .picked {
@@ -96,6 +91,17 @@
   .picked .close-x { margin-left: auto; cursor: pointer; color: var(--muted); font-size: 18px; }
   .picked .sum { color: #cdd6e4; font-size: 14px; }
   .picked .rank { color: var(--muted); font-size: 13px; }
+  tr.detail td {
+    background: var(--panel2); white-space: normal; text-align: left;
+    padding: 14px 18px; font-size: 14px;
+  }
+  .ai-title { color: var(--accent); font-weight: 700; font-size: 13px; margin-bottom: 4px; }
+  .ai-sum { color: #cdd6e4; margin-bottom: 12px; }
+  .news-title { color: var(--gold); font-weight: 700; font-size: 13px; margin-bottom: 4px; }
+  .news li { margin: 4px 0; font-size: 13.5px; }
+  .news a { color: #9cc0ff; text-decoration: none; }
+  .news a:hover { text-decoration: underline; }
+  .news .src { color: var(--muted); font-size: 12px; margin-left: 6px; }
   .notes { margin-top: 14px; color: var(--muted); font-size: 12.5px; }
   .notes li { margin: 2px 0; }
   .state { padding: 40px 0; text-align: center; color: var(--muted); }
@@ -109,7 +115,7 @@
 <div class="wrap">
   <header>
     <h1>📡 台美科技股訊號雷達</h1>
-    <span class="sub">籌碼動能 × 相對估值 雙層過濾 + ETF 長期穩健篩選 · MVP v2</span>
+    <span class="sub">籌碼動能 × 相對估值 雙層過濾 + ETF 長期穩健篩選 · MVP v4</span>
   </header>
   <div class="disclaimer">
     ⚠️ 本頁為研究與訊號產生工具,非投資建議、非自動下單系統。所有清單僅為候選訊號,進出場決策一律需人工複核。
@@ -129,7 +135,7 @@
       <button id="btn-reload">重新整理</button>
     </div>
     <div class="searchbar">
-      <input type="text" id="q" placeholder="輸入代號查總分:2330 / NVDA / 0050">
+      <input type="text" id="q" placeholder="輸入代號查總分:2330">
       <button id="btn-q">🔍 查詢</button>
       <label class="xqbtn" id="xq-label" title="XQ匯出的自選股CSV(含主力買賣超/集中度欄位)">
         📥 匯入 XQ 籌碼 CSV<input type="file" id="xq-file" hidden accept=".csv,.txt">
@@ -137,41 +143,51 @@
       <span class="xq-status" id="xq-status"></span>
     </div>
     <div id="picked-box"></div>
-    <p class="hint">💡 點任一列可展開「智能摘要」(含營運亮點)與最新新聞題材</p>
+    <p class="hint">💡 點任一列展開「智能摘要」與新聞題材;點欄位標題可排序(再點切換升降冪、第三下恢復預設)</p>
     <div id="content"><div class="state"><span class="spin"></span>載入中…(首次計算約需數秒)</div></div>
     <ul class="notes" id="notes"></ul>
   </div>
 
   <footer>
-    資料源:台灣證交所 OpenAPI(行情/三大法人/本益比)、Yahoo Finance(美股行情、估值、ETF還原價、新聞)。
-    個股分數為 0–100 橫斷面百分位;★ = 達觸發門檻之候選訊號。ETF 年化報酬為含息總報酬。結果由 CDN 快取(個股30分鐘/ETF 6小時)。
+    資料源:台灣證交所 OpenAPI(行情/三大法人/本益比/月營收)、Yahoo Finance(美股行情、估值、ETF還原價、新聞)。
+    個股分數為 0–100 橫斷面百分位;★ = 達觸發門檻之候選訊號。YTD 為年初至今漲跌(ETF 含息)。結果由 CDN 快取(個股30分鐘/ETF 6小時)。
   </footer>
 </div>
 
 <script>
-const state = { market: "tw", cache: {}, xq: null };
+const state = { market: "tw", cache: {}, xq: null, sort: {}, viewRows: [] };
 try { state.xq = JSON.parse(localStorage.getItem("xqData") || "null"); } catch {}
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
 const fmtPrice = (v) => v >= 1000 ? v.toLocaleString("en-US", {maximumFractionDigits: 0}) : (+v).toFixed(2);
 const cls = (s) => s >= 70 ? "s-hi" : s >= 40 ? "s-md" : "s-lo";
 const pct = (v) => v == null ? "—" : v.toFixed(1) + "%";
+const fmtYtd = (v) => v == null
+  ? "—"
+  : `<span class="${v >= 0 ? "up" : "down"}">${v >= 0 ? "+" : ""}${v.toFixed(1)}%</span>`;
 
-function stockTable(data, market) {
-  const head = `<tr>
-    <th class="l">#</th><th class="l">標的</th><th>收盤</th>
-    <th>籌碼分</th><th>估值分</th><th>總分</th><th class="l">觸發</th><th class="l">訊號原因</th></tr>`;
-  const rows = data.rows.map((r, i) => `<tr class="row" data-i="${i}" data-kind="${market}">
-    <td class="l">${i + 1}</td>
-    <td class="l"><span class="code">${esc(r.code)}</span> <span class="name">${esc(r.name)}</span></td>
-    <td>${fmtPrice(r.close)}</td>
-    <td><span class="score ${cls(r.chipScore)}">${r.chipScore}</span></td>
-    <td><span class="score ${cls(r.valScore)}">${r.valScore}</span></td>
-    <td><span class="score ${cls(r.totalScore)}">${r.totalScore}</span></td>
-    <td class="l">${r.triggered ? '<span class="trig">★ 候選</span>' : '<span style="color:#5d6a80">觀察</span>'}</td>
-    <td class="l"><div class="chips">${(r.reasons || []).map(x => '<span class="chip">' + esc(x) + "</span>").join("")}${xqChips(r, market)}</div></td>
-  </tr>`).join("");
-  return "<table>" + head + rows + "</table>";
+// ---------- 排序 ----------
+function sortArrow(k) {
+  const s = state.sort[state.market];
+  if (!s || s.key !== k) return " ↕";
+  return s.dir === -1 ? " ▼" : " ▲";
+}
+function thSort(k, label, extraCls = "") {
+  const s = state.sort[state.market];
+  const on = s && s.key === k ? " sorted" : "";
+  return `<th class="sortable${on} ${extraCls}" data-k="${k}">${label}${sortArrow(k)}</th>`;
+}
+function applySort(rows) {
+  const s = state.sort[state.market];
+  if (!s) return rows;
+  return [...rows].sort((a, b) => {
+    const av = a[s.key], bv = b[s.key];
+    const an = av == null || Number.isNaN(av), bn = bv == null || Number.isNaN(bv);
+    if (an && bn) return 0;
+    if (an) return 1;
+    if (bn) return -1;
+    return s.dir * (av - bv) * -1;
+  });
 }
 
 function xqChips(r, market) {
@@ -185,23 +201,45 @@ function xqChips(r, market) {
   return h;
 }
 
-function etfTable(data) {
+function stockTable(rows, market) {
+  const head = `<tr>
+    <th class="l">#</th><th class="l">標的</th>${thSort("close", "收盤")}${thSort("ytd", "YTD")}
+    ${thSort("chipScore", "籌碼分")}${thSort("valScore", "估值分")}${thSort("totalScore", "總分")}
+    <th class="l">觸發</th><th class="l">訊號原因</th></tr>`;
+  const body = rows.map((r, i) => `<tr class="row" data-i="${i}">
+    <td class="l">${i + 1}</td>
+    <td class="l"><span class="code">${esc(r.code)}</span> <span class="name">${esc(r.name)}</span></td>
+    <td>${fmtPrice(r.close)}</td>
+    <td>${fmtYtd(r.ytd)}</td>
+    <td><span class="score ${cls(r.chipScore)}">${r.chipScore}</span></td>
+    <td><span class="score ${cls(r.valScore)}">${r.valScore}</span></td>
+    <td><span class="score ${cls(r.totalScore)}">${r.totalScore}</span></td>
+    <td class="l">${r.triggered ? '<span class="trig">★ 候選</span>' : '<span style="color:#5d6a80">觀察</span>'}</td>
+    <td class="l"><div class="chips">${(r.reasons || []).map(x => '<span class="chip">' + esc(x) + "</span>").join("")}${xqChips(r, market)}</div></td>
+  </tr>`).join("");
+  return "<table>" + head + body + "</table>";
+}
+
+function etfTable(rows) {
   const head = `<tr>
     <th class="l">#</th><th class="l">標的</th><th class="l">市場</th><th class="l">類型</th>
-    <th>年化報酬</th><th>近3年</th><th>波動度</th><th>最大回撤</th><th>風險調整</th><th class="l">5%門檻</th></tr>`;
-  const rows = data.rows.map((r, i) => `<tr class="row" data-i="${i}" data-kind="etf">
+    ${thSort("cagrMain", "年化報酬")}${thSort("cagr3", "近3年")}${thSort("ytd", "YTD")}
+    ${thSort("vol", "波動度")}${thSort("maxDD", "最大回撤")}${thSort("sharpe", "風險調整")}
+    <th class="l">5%門檻</th></tr>`;
+  const body = rows.map((r, i) => `<tr class="row" data-i="${i}">
     <td class="l">${i + 1}</td>
     <td class="l"><span class="code">${esc(r.code)}</span> <span class="name">${esc(r.name)}</span></td>
     <td class="l">${r.market === "TW" ? "🇹🇼" : "🇺🇸"}</td>
     <td class="l">${esc(r.type)}</td>
     <td>${pct(r.cagrMain)}</td>
     <td>${pct(r.cagr3)}</td>
+    <td>${fmtYtd(r.ytd)}</td>
     <td>${pct(r.vol)}</td>
     <td>${r.maxDD != null ? "-" + r.maxDD + "%" : "—"}</td>
     <td>${r.sharpe ?? "—"}</td>
     <td class="l">${r.insufficient ? '<span class="fail">資料不足</span>' : r.qualified ? '<span class="pass">✓ 達標</span>' : '<span class="fail">未達</span>'}</td>
   </tr>`).join("");
-  return "<table>" + head + rows + "</table>";
+  return "<table>" + head + body + "</table>";
 }
 
 function render(data) {
@@ -214,25 +252,36 @@ function render(data) {
     document.getElementById("content").innerHTML = '<div class="state">今日無符合條件之標的</div>';
     return;
   }
-  const html = data.market === "ETF" ? etfTable(data) : stockTable(data, state.market);
+  state.viewRows = applySort(data.rows);
+  const html = data.market === "ETF" ? etfTable(state.viewRows) : stockTable(state.viewRows, state.market);
   document.getElementById("content").innerHTML = '<div class="tablebox">' + html + "</div>";
 
-  document.querySelectorAll("tr.row").forEach(tr => tr.addEventListener("click", () => toggleDetail(tr, data)));
+  document.querySelectorAll("tr.row").forEach(tr => tr.addEventListener("click", () => toggleDetail(tr)));
+  document.querySelectorAll("th.sortable").forEach(th => th.addEventListener("click", () => {
+    const k = th.dataset.k;
+    const cur = state.sort[state.market];
+    if (!cur || cur.key !== k) state.sort[state.market] = { key: k, dir: -1 };
+    else if (cur.dir === -1) cur.dir = 1;
+    else delete state.sort[state.market];
+    render(state.cache[state.market]);
+  }));
 }
 
 function newsQuery(r, kind) {
-  if (kind === "tw") return r.name || r.code;            // 中文名稱在Yahoo搜尋效果較好
-  if (kind === "etf") return r.market === "TW" ? (r.name || r.code) : r.code;
-  return r.code;                                          // 美股用ticker
+  if (kind === "tw") return { q: r.code + ".TW", q2: r.name || null };
+  if (kind === "etf") return r.market === "TW"
+    ? { q: r.code + ".TW", q2: r.name || null }
+    : { q: r.code, q2: null };
+  return { q: r.code, q2: null };
 }
 
-async function toggleDetail(tr, data) {
+async function toggleDetail(tr) {
   const next = tr.nextElementSibling;
   if (next && next.classList.contains("detail")) { next.remove(); return; }
   document.querySelectorAll("tr.detail").forEach(d => d.remove());
 
-  const r = data.rows[+tr.dataset.i];
-  const kind = tr.dataset.kind;
+  const r = state.viewRows[+tr.dataset.i];
+  const kind = state.market;
   const det = document.createElement("tr");
   det.className = "detail";
   const colspan = tr.children.length;
@@ -254,7 +303,8 @@ async function toggleDetail(tr, data) {
 
   const box = det.querySelector(".news-box");
   try {
-    const res = await fetch("/api/news?q=" + encodeURIComponent(newsQuery(r, kind)));
+    const { q, q2 } = newsQuery(r, kind);
+    const res = await fetch("/api/news?q=" + encodeURIComponent(q) + (q2 ? "&q2=" + encodeURIComponent(q2) : ""));
     const j = await res.json();
     if (!j.ok) throw new Error(j.error || "news API error");
     box.innerHTML = j.news.length
@@ -262,7 +312,7 @@ async function toggleDetail(tr, data) {
           `<li><a href="${esc(n.link)}" target="_blank" rel="noopener">${esc(n.title)}</a>` +
           `<span class="src">${esc(n.publisher || "")}${n.time ? " · " + new Date(n.time).toLocaleDateString("zh-TW") : ""}</span></li>`
         ).join("") + "</ul>"
-      : '<span class="name">暫無相關新聞(資料源未收錄)</span>';
+      : '<span class="name">暫無相關新聞(資料源未收錄此標的)</span>';
   } catch (e) {
     box.innerHTML = '<span class="err">新聞抓取失敗:' + esc(e.message) + "</span>";
   }
@@ -293,14 +343,12 @@ async function load(force) {
 function scoreBadge(label, v) {
   return `<span class="name">${label}</span> <span class="score ${cls(v)}">${v}</span>`;
 }
-
 function renderPicked(html) {
   document.getElementById("picked-box").innerHTML = html
     ? `<div class="picked">${html}</div>` : "";
   const x = document.querySelector(".picked .close-x");
   if (x) x.addEventListener("click", () => renderPicked(""));
 }
-
 async function doSearch() {
   const q = document.getElementById("q").value.trim().toUpperCase();
   if (!q) return;
@@ -320,7 +368,7 @@ async function doSearch() {
     renderPicked(r
       ? `<div class="head"><span class="code">${esc(r.code)}</span> <span class="name">${esc(r.name)}</span>
           <span>${r.insufficient ? '<span class="fail">資料不足</span>' : r.qualified ? '<span class="pass">✓ 達5%門檻</span>' : '<span class="fail">未達5%門檻</span>'}</span>
-          <span class="rank">年化${pct(r.cagrMain)} · 波動${pct(r.vol)} · 回撤-${r.maxDD}% · 風險調整${r.sharpe ?? "—"}</span>
+          <span class="rank">年化${pct(r.cagrMain)} · YTD ${r.ytd == null ? "—" : (r.ytd >= 0 ? "+" : "") + r.ytd.toFixed(1) + "%"} · 波動${pct(r.vol)} · 回撤-${r.maxDD}% · 風險調整${r.sharpe ?? "—"}</span>
           <span class="close-x">✕</span></div>
          <div class="sum">${esc(r.summary)}</div>`
       : `<div class="head"><span class="err">查無「${esc(q)}」</span><span class="close-x">✕</span></div>
@@ -329,13 +377,14 @@ async function doSearch() {
   }
 
   try {
-    const res = await fetch(`/api/screen?market=${m}&code=${encodeURIComponent(q)}`);
+    const res = await fetch("/api/screen?market=" + m + "&code=" + encodeURIComponent(q));
     const data = await res.json();
     if (!data.ok) throw new Error(data.error || "API 回傳失敗");
     if (data.picked) {
       const r = data.picked;
       renderPicked(
         `<div class="head"><span class="code">${esc(r.code)}</span> <span class="name">${esc(r.name)}</span>
+          <span>YTD ${fmtYtd(r.ytd)}</span>
           ${scoreBadge("籌碼", r.chipScore)} ${scoreBadge("估值", r.valScore)} ${scoreBadge("總分", r.totalScore)}
           <span>${r.triggered ? '<span class="trig">★ 候選</span>' : '<span style="color:#5d6a80">觀察</span>'}</span>
           <span class="rank">全universe排名 ${r.rank} / ${r.of}</span>

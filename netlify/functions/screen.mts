@@ -4,7 +4,10 @@
 import type { Context, Config } from "@netlify/functions";
 import { scoreTaiwan, scoreUS, scoreETF } from "./lib/scoring.mjs";
 
-const UA = { "User-Agent": "Mozilla/5.0 (stock-project research tool)" };
+const UA = {
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+};
 
 async function fetchJson(url: string, init: RequestInit = {}, timeoutMs = 8000) {
   const res = await fetch(url, {
@@ -36,6 +39,38 @@ function rocYmToLabel(ym: unknown): string | null {
   return Number.isFinite(y) ? `${y}/${mm}` : null;
 }
 
+/** 去年最後交易日全市場收盤價(YTD基準)。失敗回傳空Map,前端顯示「—」。 */
+async function fetchPrevYearEndCloses(): Promise<Map<string, number>> {
+  const year = new Date(Date.now() + 8 * 3600_000).getUTCFullYear() - 1;
+  const settled = await Promise.allSettled(
+    ["1226", "1227", "1228", "1229", "1230", "1231"].map((md) =>
+      fetchJson(
+        `https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX?response=json&date=${year}${md}&type=ALLBUT0999`,
+        {}, 10000,
+      ).then((j) => ({ d: `${year}${md}`, j })),
+    ),
+  );
+  const oks = settled
+    .filter((s): s is PromiseFulfilledResult<any> => s.status === "fulfilled" && s.value.j?.stat === "OK")
+    .map((s) => s.value)
+    .sort((a, b) => a.d.localeCompare(b.d));
+  const latest = oks.at(-1);
+  const map = new Map<string, number>();
+  if (!latest) return map;
+  const tables = latest.j.tables ?? [latest.j];
+  const tbl = tables.find(
+    (t: any) => Array.isArray(t?.fields) && t.fields.includes("證券代號") && t.fields.includes("收盤價"),
+  );
+  if (!tbl) return map;
+  const iC = tbl.fields.indexOf("證券代號");
+  const iP = tbl.fields.indexOf("收盤價");
+  for (const row of tbl.data ?? []) {
+    const p = num(row[iP]);
+    if (p > 0) map.set(String(row[iC]).trim(), p);
+  }
+  return map;
+}
+
 async function screenTaiwan(pick: string | null = null) {
   // 1) 近12個日曆日的 T86(三大法人買賣超),取其中最近5個交易日
   const t86Settled = await Promise.allSettled(
@@ -54,11 +89,15 @@ async function screenTaiwan(pick: string | null = null) {
     .slice(-5);
   if (t86Days.length < 3) throw new Error("TWSE T86 資料不足(近12日僅取得" + t86Days.length + "日)");
 
-  // 2) 當日行情、估值與月營收(TWSE OpenAPI 最新快照)
-  const [priceAll, valAll, revAll] = await Promise.all([
+  // 2) 當日行情、估值、月營收與去年底收盤(YTD基準)
+  let revErr: string | null = null;
+  const [priceAll, valAll, revAll, prevYE] = await Promise.all([
     fetchJson("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"),
     fetchJson("https://openapi.twse.com.tw/v1/exchangeReport/BWIBBU_ALL"),
-    fetchJson("https://openapi.twse.com.tw/v1/opendata/t187ap05_L").catch(() => []),
+    fetchJson("https://openapi.twse.com.tw/v1/opendata/t187ap05_L", {}, 12000).catch(
+      (e) => { revErr = String(e?.message ?? e); return []; },
+    ),
+    fetchPrevYearEndCloses().catch(() => new Map<string, number>()),
   ]);
 
   // 月營收 → 基本面亮點(欄位名以關鍵字模糊比對,防 API 欄名微調)
@@ -134,6 +173,12 @@ async function screenTaiwan(pick: string | null = null) {
       revYoY: f.revYoY ?? NaN,
       revAccYoY: f.revAccYoY ?? NaN,
       revLabel: f.revLabel ?? null,
+      revMapLoaded: revMap.size > 0,
+      ytd: (() => {
+        const base = prevYE.get(p.Code);
+        const c = num(p.ClosingPrice);
+        return base && base > 0 && c > 0 ? ((c / base) - 1) * 100 : NaN;
+      })(),
     });
   }
 
@@ -150,7 +195,12 @@ async function screenTaiwan(pick: string | null = null) {
     notes: [
       "籌碼分數:外資+投信近5日連買天數×買超強度之橫斷面百分位",
       "估值分數:P/E 橫斷面便宜度70% + 殖利率排名30%(TWSE BWIBBU)",
-      "基本面:TWSE 月營收彙總(單月/累計年增率+產業別),寫入智能摘要",
+      revMap.size > 0
+        ? `基本面:TWSE 月營收彙總已載入 ${revMap.size} 家(公告期間未申報者摘要會註明),寫入智能摘要`
+        : `⚠ 月營收資料源未取得${revErr ? `(${revErr})` : ""},本次摘要缺基本面段落`,
+      prevYE.size > 0
+        ? `YTD 以去年最後交易日收盤為基準(${prevYE.size} 檔)`
+        : "⚠ 去年底收盤資料未取得,YTD 顯示為 —",
       "流動性門檻:當日成交金額≥3億;觸發定義:連買≥3日且5日買超佔量≥5%",
     ],
   };
@@ -198,15 +248,37 @@ const US_NAMES: Record<string, string> = {
 
 async function fetchChart(ticker: string) {
   const j = await fetchJson(
-    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?range=3mo&interval=1d`,
+    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?range=1y&interval=1d`,
   );
   const r = j?.chart?.result?.[0];
-  const closes: number[] = (r?.indicators?.quote?.[0]?.close ?? []).filter((x: number) => x != null);
-  const vols: number[] = (r?.indicators?.quote?.[0]?.volume ?? []).filter((x: number) => x != null);
-  return { ticker, closes, vols, meta: r?.meta };
+  const rawC: (number | null)[] = r?.indicators?.quote?.[0]?.close ?? [];
+  const rawV: (number | null)[] = r?.indicators?.quote?.[0]?.volume ?? [];
+  const rawT: number[] = r?.timestamp ?? [];
+  const closes: number[] = [], vols: number[] = [], ts: number[] = [];
+  for (let i = 0; i < rawC.length; i++) {
+    if (rawC[i] != null && rawC[i]! > 0) {
+      closes.push(rawC[i]!);
+      vols.push(rawV[i] ?? 0);
+      ts.push(rawT[i] ?? 0);
+    }
+  }
+  return { ticker, closes, vols, ts, meta: r?.meta };
 }
 
 const mean = (a: number[]) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : NaN);
+
+/** YTD%:序列最後一點 vs 去年最後一點(以timestamp判年份)。無去年資料回傳NaN。 */
+function ytdFrom(values: number[], ts: number[]): number {
+  if (!values.length || values.length !== ts.length) return NaN;
+  const nowYear = new Date().getUTCFullYear();
+  let baseIdx = -1;
+  for (let i = 0; i < ts.length; i++) {
+    if (new Date(ts[i] * 1000).getUTCFullYear() < nowYear) baseIdx = i;
+    else break;
+  }
+  if (baseIdx < 0 || !(values[baseIdx] > 0)) return NaN;
+  return (values[values.length - 1] / values[baseIdx] - 1) * 100;
+}
 
 async function fetchYahooValuations(
   tickers: string[],
@@ -245,7 +317,7 @@ async function screenUS(pick: string | null = null) {
   const settled = await Promise.allSettled(
     [...US_TICKERS, "SOXX"].map((t) => fetchChart(t)),
   );
-  const charts = new Map<string, { closes: number[]; vols: number[] }>();
+  const charts = new Map<string, { closes: number[]; vols: number[]; ts: number[] }>();
   for (const s of settled) {
     if (s.status === "fulfilled" && s.value.closes.length >= 25) {
       charts.set(s.value.ticker, s.value);
@@ -278,6 +350,7 @@ async function screenUS(pick: string | null = null) {
       fwdPe: v?.pe ?? NaN,
       epsGrowth: v?.epsGrowth ?? NaN,
       theme: US_THEMES[t] ?? null,
+      ytd: ytdFrom(c.closes, (c as any).ts ?? []),
     });
   }
 
@@ -329,19 +402,31 @@ const ETF_LIST: { code: string; yahoo: string; name: string; market: "TW" | "US"
   { code: "JEPI", yahoo: "JEPI", name: "JPMorgan 股票收益",     market: "US", type: "收益型" },
 ];
 
-async function fetchMonthlyAdj(yahoo: string): Promise<number[]> {
+async function fetchMonthlyAdj(yahoo: string): Promise<{ adj: number[]; ts: number[] }> {
   const j = await fetchJson(
     `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahoo)}?range=10y&interval=1mo`,
     {}, 10000,
   );
   const r = j?.chart?.result?.[0];
-  const adj: number[] = r?.indicators?.adjclose?.[0]?.adjclose ?? r?.indicators?.quote?.[0]?.close ?? [];
-  return adj.filter((x: number) => Number.isFinite(x) && x > 0);
+  const rawA: (number | null)[] =
+    r?.indicators?.adjclose?.[0]?.adjclose ?? r?.indicators?.quote?.[0]?.close ?? [];
+  const rawT: number[] = r?.timestamp ?? [];
+  const adj: number[] = [], ts: number[] = [];
+  for (let i = 0; i < rawA.length; i++) {
+    if (Number.isFinite(rawA[i]) && rawA[i]! > 0) {
+      adj.push(rawA[i]!);
+      ts.push(rawT[i] ?? 0);
+    }
+  }
+  return { adj, ts };
 }
 
 async function screenETFs() {
   const settled = await Promise.allSettled(
-    ETF_LIST.map(async (e) => ({ ...e, adj: await fetchMonthlyAdj(e.yahoo) })),
+    ETF_LIST.map(async (e) => {
+      const { adj, ts } = await fetchMonthlyAdj(e.yahoo);
+      return { ...e, adj, ytd: ytdFrom(adj, ts) };
+    }),
   );
   const rows = settled
     .filter((s): s is PromiseFulfilledResult<any> => s.status === "fulfilled" && s.value.adj.length >= 13)
@@ -355,7 +440,7 @@ async function screenETFs() {
     universeSize: rows.length,
     rows: scoreETF(rows, { threshold: 0.05 }),
     notes: [
-      "年化報酬以還原股息之調整價(adjusted close)計算 = 含息總報酬;✓達標 = 年化報酬≥5%且成立滿3年",
+      "年化報酬與YTD以還原股息之調整價(adjusted close)計算 = 含息總報酬;✓達標 = 年化報酬≥5%且成立滿3年",
       "排序:達標者優先,再依風險調整報酬(年化報酬÷年化波動)由高至低——「穩健」看的是這一欄,不是報酬絕對值",
       "近5年涵蓋2024多頭與2025回檔,數字已含一次完整循環;過去績效不保證未來報酬",
       ...(failed.length ? [`⚠ 本次未能取得:${failed.join("、")}(資料源無回應)`] : []),
@@ -363,10 +448,11 @@ async function screenETFs() {
   };
 }
 
-// ---------------- 新聞題材(Yahoo Finance Search) ----------------
-async function fetchNews(q: string) {
+// ---------------- 新聞題材(Yahoo Finance Search,多重備援) ----------------
+async function fetchNewsOnce(q: string, locale: boolean) {
+  const loc = locale ? "&lang=zh-Hant-TW&region=TW" : "";
   const j = await fetchJson(
-    `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(q)}&newsCount=6&quotesCount=0`,
+    `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(q)}&newsCount=6&quotesCount=0${loc}`,
     {}, 6000,
   );
   return (j?.news ?? []).slice(0, 6).map((n: any) => ({
@@ -375,6 +461,25 @@ async function fetchNews(q: string) {
     link: n.link,
     time: n.providerPublishTime ? new Date(n.providerPublishTime * 1000).toISOString() : null,
   }));
+}
+
+/** 依序嘗試:q(含台灣locale,若為中文/台股代號)→ q 純參數 → q2 各組合。 */
+async function fetchNews(q: string, q2: string | null) {
+  const attempts: [string, boolean][] = [];
+  for (const query of [q, q2].filter(Boolean) as string[]) {
+    const isTw = /[^\x00-\x7F]/.test(query) || /\.TW$/i.test(query);
+    if (isTw) attempts.push([query, true]);
+    attempts.push([query, false]);
+  }
+  let lastErr: unknown = null;
+  for (const [query, locale] of attempts) {
+    try {
+      const news = await fetchNewsOnce(query, locale);
+      if (news.length) return news;
+    } catch (e) { lastErr = e; }
+  }
+  if (lastErr) throw lastErr;
+  return [];
 }
 
 // ---------------- handler ----------------
@@ -388,7 +493,7 @@ export default async (req: Request, _context: Context) => {
     if (url.pathname.endsWith("/news")) {
       const q = url.searchParams.get("q") ?? "";
       if (!q) throw new Error("missing q");
-      const news = await fetchNews(q);
+      const news = await fetchNews(q, url.searchParams.get("q2"));
       return new Response(
         JSON.stringify({ ok: true, generatedAt: new Date().toISOString(), news }),
         { headers },

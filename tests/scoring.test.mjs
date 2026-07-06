@@ -19,7 +19,7 @@ assert.equal(streakOf([1, 1, 1]), 3);
 const twRows = [
   { code: "2330", name: "台積電", close: 1000, volume: 20_000_000, turnover: 2e10,
     nets: [3e6, 4e6, 5e6, 6e6, 8e6], foreignSum: 2e7, trustSum: 6e6, pe: 18, pb: 6, dividendYield: 1.5,
-    industry: "半導體業", revYoY: 35.2, revAccYoY: 22.1, revLabel: "2026/06" },
+    industry: "半導體業", revYoY: 35.2, revAccYoY: 22.1, revLabel: "2026/06", revMapLoaded: true, ytd: 12.34 },
   { code: "2317", name: "鴻海", close: 180, volume: 30_000_000, turnover: 5e9,
     nets: [1e6, -2e6, 5e5, 3e5, 2e5], foreignSum: 1e5, trustSum: 0, pe: 12, pb: 1.6, dividendYield: 3.2,
     industry: "電子零組件業", revYoY: -8.3, revAccYoY: -2.0, revLabel: "2026/06" },
@@ -39,6 +39,10 @@ assert.ok(tw[0].summary.includes("營收年增35.2%"), "摘要應含營收年增
 assert.ok(tw[0].summary.includes("基本面支持"), "高成長應給正面判讀");
 const hh = tw.find((r) => r.code === "2317");
 assert.ok(hh.summary.includes("營收年減") && hh.summary.includes("背離"), "營收衰退應警示背離");
+// YTD:輸出應含裁切後數值與摘要句
+assert.equal(tw[0].ytd, 12.3, "trimRow 應輸出一位小數YTD");
+assert.ok(tw[0].summary.includes("今年以來股價上漲12.3%"), "摘要應含YTD");
+assert.equal(hh.ytd, null, "無YTD資料應為null");
 
 // pick:指定代號應回傳完整結果與排名
 const picked = scoreTaiwan(twRows, { pick: "2317" }).picked;
@@ -92,7 +96,7 @@ assert.equal(maxDrawdown([100, 150, 75, 120]), 0.5);
 
 // scoreETF:高報酬者達標且排前;短歷史標記資料不足
 const etf = scoreETF([
-  { code: "GOOD", name: "好ETF", market: "US", type: "市值型", adj: monthly1pct },          // ~12.7%/yr
+  { code: "GOOD", name: "好ETF", market: "US", type: "市值型", adj: monthly1pct, ytd: 8.88 }, // ~12.7%/yr
   { code: "FLATX", name: "平ETF", market: "TW", type: "高股息", adj: Array.from({ length: 61 }, (_, i) => 100 * 1.002 ** i) }, // ~2.4%/yr
   { code: "NEWX", name: "新ETF", market: "TW", type: "科技", adj: Array.from({ length: 14 }, (_, i) => 100 + i) },
 ]);
@@ -106,5 +110,8 @@ assert.equal(newE.insufficient, true);
 assert.equal(etf[0].code, "GOOD", "達標者應排最前");
 assert.ok(good.summary.includes("達到5%年化門檻"));
 assert.ok(flatE.summary.includes("未達5%年化門檻"));
+assert.equal(good.ytd, 8.9, "ETF應輸出YTD(一位小數)");
+assert.ok(good.summary.includes("今年以來+8.9%"));
+assert.equal(newE.ytd, null);
 
 console.log("ALL SCORING TESTS PASSED");

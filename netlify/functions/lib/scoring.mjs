@@ -130,6 +130,7 @@ const trimRow = (r) => ({
   code: r.code ?? r.ticker,
   name: r.name ?? "",
   close: r.close,
+  ytd: Number.isFinite(r.ytd) ? +r.ytd.toFixed(1) : null,
   chipScore: r.chipScore,
   valScore: r.valScore,
   totalScore: r.totalScore,
@@ -178,8 +179,14 @@ export function buildTwSummary(r) {
     else
       p.push("⚠ 營收年減,法人買盤與基本面背離,可能是預期落底行情,需自行判斷題材(見下方新聞)。");
   } else {
-    p.push("(未取得月營收資料)");
+    p.push(
+      r.revMapLoaded
+        ? "(該公司尚未公告最新一期月營收,基本面判讀暫缺)"
+        : "(月營收資料源暫時無回應,基本面判讀暫缺)",
+    );
   }
+  if (Number.isFinite(r.ytd))
+    p.push(`今年以來股價${r.ytd >= 0 ? "上漲" : "下跌"}${Math.abs(r.ytd).toFixed(1)}%。`);
   p.push(
     `外資+投信近${r.nets.length}日合計${lots >= 0 ? "買超" : "賣超"}約${Math.abs(lots).toLocaleString()}張` +
       (r.streak >= 2 ? `、已連續${r.streak}日站在買方` : "") +
@@ -227,6 +234,8 @@ export function buildUsSummary(r) {
   if (Number.isFinite(r.mom20))
     p.push(`股價位於20日均線${r.mom20 >= 0 ? "之上" : "之下"}${Math.abs(r.mom20 * 100).toFixed(1)}%`);
   let s = fund + p.join(",") + `;綜合籌碼替代分數位居樣本第${r.chipScore}百分位。`;
+  if (Number.isFinite(r.ytd))
+    s += `今年以來${r.ytd >= 0 ? "+" : ""}${r.ytd.toFixed(1)}%。`;
   s += r.fwdPe > 0
     ? `Forward P/E ${r.fwdPe.toFixed(1)}倍,估值分${r.valScore}(相對樣本${r.valScore >= 60 ? "偏便宜" : r.valScore >= 40 ? "中性" : "偏貴"})。`
     : "估值資料暫缺,以中性50分計。";
@@ -305,8 +314,12 @@ export function scoreETF(rows, opts = {}) {
             ? `達到5%年化門檻${sharpe >= 0.8 ? ",且波動相對報酬控制良好,適合作為長期核心部位分批布局" : ",但波動較大,建議搭配低波動部位或拉長分批期間"}。`
             : `未達5%年化門檻,較適合作為防禦/配息部位而非報酬引擎。`));
 
+    if (Number.isFinite(r.ytd))
+      summary += `今年以來${r.ytd >= 0 ? "+" : ""}${r.ytd.toFixed(1)}%。`;
+
     out.push({
       code: r.code, name: r.name, market: r.market, type: r.type,
+      ytd: Number.isFinite(r.ytd) ? +r.ytd.toFixed(1) : null,
       years: +years.toFixed(1),
       cagr5: Number.isFinite(cagr5) ? +(cagr5 * 100).toFixed(1) : null,
       cagr3: Number.isFinite(cagr3) ? +(cagr3 * 100).toFixed(1) : null,

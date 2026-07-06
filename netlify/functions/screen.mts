@@ -27,7 +27,16 @@ const num = (s: unknown): number => {
 };
 
 // ---------------- 台股 ----------------
-async function screenTaiwan() {
+/** 民國年月字串(如 11506)→ '2026/06' */
+function rocYmToLabel(ym: unknown): string | null {
+  const s = String(ym ?? "").replace(/\D/g, "");
+  if (s.length < 4) return null;
+  const mm = s.slice(-2);
+  const y = parseInt(s.slice(0, -2), 10) + 1911;
+  return Number.isFinite(y) ? `${y}/${mm}` : null;
+}
+
+async function screenTaiwan(pick: string | null = null) {
   // 1) 近12個日曆日的 T86(三大法人買賣超),取其中最近5個交易日
   const t86Settled = await Promise.allSettled(
     Array.from({ length: 12 }, (_, i) =>
@@ -45,11 +54,33 @@ async function screenTaiwan() {
     .slice(-5);
   if (t86Days.length < 3) throw new Error("TWSE T86 資料不足(近12日僅取得" + t86Days.length + "日)");
 
-  // 2) 當日行情與估值(TWSE OpenAPI 最新快照)
-  const [priceAll, valAll] = await Promise.all([
+  // 2) 當日行情、估值與月營收(TWSE OpenAPI 最新快照)
+  const [priceAll, valAll, revAll] = await Promise.all([
     fetchJson("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"),
     fetchJson("https://openapi.twse.com.tw/v1/exchangeReport/BWIBBU_ALL"),
+    fetchJson("https://openapi.twse.com.tw/v1/opendata/t187ap05_L").catch(() => []),
   ]);
+
+  // 月營收 → 基本面亮點(欄位名以關鍵字模糊比對,防 API 欄名微調)
+  const revMap = new Map<string, any>();
+  if (Array.isArray(revAll) && revAll.length) {
+    const keys = Object.keys(revAll[0]);
+    const kCode = keys.find((k) => k.includes("公司代號"));
+    const kInd = keys.find((k) => k.includes("產業別"));
+    const kYoY = keys.find((k) => k.includes("去年同月增減"));
+    const kAcc = keys.find((k) => k.includes("前期比較增減") || k.includes("去年累計增減"));
+    const kYm = keys.find((k) => k.includes("資料年月"));
+    if (kCode && kYoY) {
+      for (const r of revAll) {
+        revMap.set(String(r[kCode]).trim(), {
+          industry: kInd ? String(r[kInd]).trim() : null,
+          revYoY: num(r[kYoY]),
+          revAccYoY: kAcc ? num(r[kAcc]) : NaN,
+          revLabel: kYm ? rocYmToLabel(r[kYm]) : null,
+        });
+      }
+    }
+  }
 
   // 3) 彙整逐檔法人買賣超序列(舊→新)
   type Acc = { name: string; nets: number[]; foreignSum: number; trustSum: number };
@@ -86,6 +117,7 @@ async function screenTaiwan() {
     const acc = chips.get(p.Code);
     if (!acc) continue;
     const v = valMap.get(p.Code) ?? {};
+    const f = revMap.get(p.Code) ?? {};
     rows.push({
       code: p.Code,
       name: p.Name || acc.name,
@@ -98,17 +130,27 @@ async function screenTaiwan() {
       pe: num(v.PEratio),
       pb: num(v.PBratio),
       dividendYield: num(v.DividendYield),
+      industry: f.industry ?? null,
+      revYoY: f.revYoY ?? NaN,
+      revAccYoY: f.revAccYoY ?? NaN,
+      revLabel: f.revLabel ?? null,
     });
   }
 
+  const scored = scoreTaiwan(rows, { pick });
   return {
     market: "TW",
     asOf: t86Days[t86Days.length - 1].date,
     universeSize: rows.length,
-    rows: scoreTaiwan(rows),
+    rows: scored.rows,
+    picked: scored.picked,
+    pickedError: pick && !scored.picked
+      ? `查無「${pick}」——查詢範圍為上市普通股且當日成交金額≥3億;上櫃與低流動性標的暫不支援`
+      : null,
     notes: [
       "籌碼分數:外資+投信近5日連買天數×買超強度之橫斷面百分位",
       "估值分數:P/E 橫斷面便宜度70% + 殖利率排名30%(TWSE BWIBBU)",
+      "基本面:TWSE 月營收彙總(單月/累計年增率+產業別),寫入智能摘要",
       "流動性門檻:當日成交金額≥3億;觸發定義:連買≥3日且5日買超佔量≥5%",
     ],
   };
@@ -121,6 +163,27 @@ const US_TICKERS = [
   "NXPI","ON","ARM","PLTR","CRM","ORCL","ADBE","NFLX","CSCO","PANW",
   "CRWD","SNOW","NOW","INTU","SHOP","UBER",
 ];
+const US_THEMES: Record<string, string> = {
+  NVDA: "AI GPU與資料中心平台龍頭", AAPL: "iPhone生態系與服務營收",
+  MSFT: "Azure雲端與Copilot AI", GOOGL: "搜尋廣告與Gemini AI",
+  AMZN: "電商與AWS雲端", META: "社群廣告與AI推薦引擎",
+  AVGO: "AI客製化晶片(ASIC)與網通", TSLA: "電動車、自駕與人形機器人",
+  AMD: "資料中心CPU/GPU挑戰者", QCOM: "手機SoC與車用/邊緣AI",
+  TXN: "類比IC、工業與車用", INTC: "x86處理器與晶圓代工轉型",
+  MU: "HBM高頻寬記憶體與記憶體循環", AMAT: "半導體設備(沉積/蝕刻)",
+  LRCX: "半導體蝕刻設備", KLAC: "半導體檢測量測設備",
+  ASML: "EUV曝光機獨家供應商", TSM: "先進製程晶圓代工龍頭",
+  ADI: "高階類比與混合訊號IC", MRVL: "資料中心ASIC與光通訊",
+  NXPI: "車用半導體", ON: "碳化矽(SiC)與車用功率半導體",
+  ARM: "CPU架構IP授權", PLTR: "政府與企業AI決策平台",
+  CRM: "企業CRM與Agentforce AI", ORCL: "雲端資料庫與AI算力租賃",
+  ADBE: "創意軟體與生成式AI", NFLX: "串流訂閱與廣告方案",
+  CSCO: "網路設備與資安", PANW: "資安平台化龍頭",
+  CRWD: "雲原生端點資安", SNOW: "企業資料雲",
+  NOW: "企業工作流程自動化AI", INTU: "財稅軟體導入AI",
+  SHOP: "電商開店SaaS", UBER: "共享出行與自駕車隊合作",
+};
+
 const US_NAMES: Record<string, string> = {
   NVDA: "NVIDIA", AAPL: "Apple", MSFT: "Microsoft", GOOGL: "Alphabet",
   AMZN: "Amazon", META: "Meta", AVGO: "Broadcom", TSLA: "Tesla",
@@ -145,9 +208,11 @@ async function fetchChart(ticker: string) {
 
 const mean = (a: number[]) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : NaN);
 
-async function fetchYahooValuations(tickers: string[]): Promise<Map<string, number>> {
+async function fetchYahooValuations(
+  tickers: string[],
+): Promise<Map<string, { pe: number; epsGrowth: number }>> {
   // Yahoo quote API 需 cookie+crumb;失敗時整層降級(估值中性50分)
-  const map = new Map<string, number>();
+  const map = new Map<string, { pe: number; epsGrowth: number }>();
   try {
     const pre = await fetch("https://fc.yahoo.com", {
       headers: UA, signal: AbortSignal.timeout(6000),
@@ -165,13 +230,18 @@ async function fetchYahooValuations(tickers: string[]): Promise<Map<string, numb
     );
     for (const q of j?.quoteResponse?.result ?? []) {
       const pe = q.forwardPE ?? q.trailingPE;
-      if (pe > 0) map.set(q.symbol, pe);
+      const epsGrowth =
+        q.epsForward > 0 && q.epsTrailingTwelveMonths > 0
+          ? q.epsForward / q.epsTrailingTwelveMonths - 1
+          : NaN;
+      if (pe > 0 || Number.isFinite(epsGrowth))
+        map.set(q.symbol, { pe: pe > 0 ? pe : NaN, epsGrowth });
     }
   } catch { /* 降級 */ }
   return map;
 }
 
-async function screenUS() {
+async function screenUS(pick: string | null = null) {
   const settled = await Promise.allSettled(
     [...US_TICKERS, "SOXX"].map((t) => fetchChart(t)),
   );
@@ -186,8 +256,8 @@ async function screenUS() {
   const soxxRet20 =
     soxx.closes.at(-1)! / soxx.closes.at(-21)! - 1;
 
-  const pes = await fetchYahooValuations(US_TICKERS);
-  const valuationAvailable = pes.size >= 5;
+  const vals = await fetchYahooValuations(US_TICKERS);
+  const valuationAvailable = vals.size >= 5;
 
   const rows: any[] = [];
   for (const t of US_TICKERS) {
@@ -196,6 +266,7 @@ async function screenUS() {
     const close = c.closes.at(-1)!;
     const ret20 = close / c.closes.at(-21)! - 1;
     const ma20 = mean(c.closes.slice(-20));
+    const v = vals.get(t);
     rows.push({
       ticker: t,
       name: US_NAMES[t] ?? t,
@@ -204,16 +275,23 @@ async function screenUS() {
       mom20: close / ma20 - 1,
       volSurge: mean(c.vols.slice(-5)) / mean(c.vols.slice(-20)),
       rs: ret20 - soxxRet20,
-      fwdPe: pes.get(t) ?? NaN,
+      fwdPe: v?.pe ?? NaN,
+      epsGrowth: v?.epsGrowth ?? NaN,
+      theme: US_THEMES[t] ?? null,
     });
   }
 
+  const scored = scoreUS(rows, { valuationAvailable, pick });
   return {
     market: "US",
     asOf: new Date().toISOString().slice(0, 10),
     universeSize: rows.length,
     valuationDegraded: !valuationAvailable,
-    rows: scoreUS(rows, { valuationAvailable }),
+    rows: scored.rows,
+    picked: scored.picked,
+    pickedError: pick && !scored.picked
+      ? `查無「${pick}」——美股查詢範圍目前限定 ${US_TICKERS.length} 檔 NDX/SOX 追蹤清單:${US_TICKERS.join("、")}`
+      : null,
     notes: [
       "籌碼替代分數:相對SOXX 20日超額報酬60% + 5日/20日量能比40%(免費源無分點/內部人日頻資料)",
       valuationAvailable
@@ -317,10 +395,11 @@ export default async (req: Request, _context: Context) => {
       );
     }
     const market = (url.searchParams.get("market") ?? "tw").toLowerCase();
+    const pick = url.searchParams.get("code");
     const data =
-      market === "us" ? await screenUS()
+      market === "us" ? await screenUS(pick)
       : market === "etf" ? await screenETFs()
-      : await screenTaiwan();
+      : await screenTaiwan(pick);
     const cache = market === "etf"
       ? "public, s-maxage=21600, stale-while-revalidate=86400" // ETF長期數據:快取6小時
       : headers["Netlify-CDN-Cache-Control"];

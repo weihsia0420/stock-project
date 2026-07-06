@@ -70,6 +70,32 @@
   .news a { color: #9cc0ff; text-decoration: none; }
   .news a:hover { text-decoration: underline; }
   .news .src { color: var(--muted); font-size: 12px; margin-left: 6px; }
+  .searchbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; align-items: center; }
+  .searchbar input[type="text"] {
+    background: var(--panel2); border: 1px solid var(--line); color: var(--text);
+    border-radius: 6px; padding: 7px 12px; font-size: 14px; width: 260px;
+  }
+  .searchbar input[type="text"]:focus { outline: none; border-color: var(--accent); }
+  .searchbar button {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 7px 16px; cursor: pointer; font-size: 13px;
+  }
+  .searchbar button:hover { border-color: var(--accent); }
+  .xqbtn {
+    background: var(--panel2); color: var(--gold); border: 1px dashed #6b5a2a;
+    border-radius: 6px; padding: 7px 14px; cursor: pointer; font-size: 13px;
+  }
+  .xq-status { color: var(--muted); font-size: 12.5px; }
+  .chip.xq-pos { color: var(--gold); background: rgba(242,193,78,.10); border-color: rgba(242,193,78,.35); }
+  .chip.xq-neg { color: var(--warn); background: rgba(239,138,128,.08); border-color: rgba(239,138,128,.3); }
+  .picked {
+    border: 1px solid var(--accent); border-radius: 10px; background: var(--panel2);
+    padding: 14px 16px; margin-bottom: 14px;
+  }
+  .picked .head { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 8px; }
+  .picked .close-x { margin-left: auto; cursor: pointer; color: var(--muted); font-size: 18px; }
+  .picked .sum { color: #cdd6e4; font-size: 14px; }
+  .picked .rank { color: var(--muted); font-size: 13px; }
   .notes { margin-top: 14px; color: var(--muted); font-size: 12.5px; }
   .notes li { margin: 2px 0; }
   .state { padding: 40px 0; text-align: center; color: var(--muted); }
@@ -102,7 +128,16 @@
       <span id="meta-gen"></span>
       <button id="btn-reload">重新整理</button>
     </div>
-    <p class="hint">💡 點任一列可展開「智能摘要」與最新新聞題材</p>
+    <div class="searchbar">
+      <input type="text" id="q" placeholder="輸入代號查總分:2330 / NVDA / 0050">
+      <button id="btn-q">🔍 查詢</button>
+      <label class="xqbtn" id="xq-label" title="XQ匯出的自選股CSV(含主力買賣超/集中度欄位)">
+        📥 匯入 XQ 籌碼 CSV<input type="file" id="xq-file" hidden accept=".csv,.txt">
+      </label>
+      <span class="xq-status" id="xq-status"></span>
+    </div>
+    <div id="picked-box"></div>
+    <p class="hint">💡 點任一列可展開「智能摘要」(含營運亮點)與最新新聞題材</p>
     <div id="content"><div class="state"><span class="spin"></span>載入中…(首次計算約需數秒)</div></div>
     <ul class="notes" id="notes"></ul>
   </div>
@@ -114,7 +149,8 @@
 </div>
 
 <script>
-const state = { market: "tw", cache: {} };
+const state = { market: "tw", cache: {}, xq: null };
+try { state.xq = JSON.parse(localStorage.getItem("xqData") || "null"); } catch {}
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
 const fmtPrice = (v) => v >= 1000 ? v.toLocaleString("en-US", {maximumFractionDigits: 0}) : (+v).toFixed(2);
@@ -133,9 +169,20 @@ function stockTable(data, market) {
     <td><span class="score ${cls(r.valScore)}">${r.valScore}</span></td>
     <td><span class="score ${cls(r.totalScore)}">${r.totalScore}</span></td>
     <td class="l">${r.triggered ? '<span class="trig">★ 候選</span>' : '<span style="color:#5d6a80">觀察</span>'}</td>
-    <td class="l"><div class="chips">${(r.reasons || []).map(x => '<span class="chip">' + esc(x) + "</span>").join("")}</div></td>
+    <td class="l"><div class="chips">${(r.reasons || []).map(x => '<span class="chip">' + esc(x) + "</span>").join("")}${xqChips(r, market)}</div></td>
   </tr>`).join("");
   return "<table>" + head + rows + "</table>";
+}
+
+function xqChips(r, market) {
+  if (market !== "tw" || !state.xq?.map?.[r.code]) return "";
+  const x = state.xq.map[r.code];
+  let h = "";
+  if (Number.isFinite(x.main))
+    h += `<span class="chip ${x.main > 0 ? "xq-pos" : "xq-neg"}">XQ主力${x.main > 0 ? "買超" : "賣超"}${Math.abs(x.main).toLocaleString()}張${x.main > 0 ? " 🔥" : ""}</span>`;
+  if (Number.isFinite(x.conc))
+    h += `<span class="chip ${x.conc > 0 ? "xq-pos" : ""}">集中度${x.conc}%</span>`;
+  return h;
 }
 
 function etfTable(data) {
@@ -189,9 +236,17 @@ async function toggleDetail(tr, data) {
   const det = document.createElement("tr");
   det.className = "detail";
   const colspan = tr.children.length;
+  const x = kind === "tw" ? state.xq?.map?.[r.code] : null;
+  const xqLine = x
+    ? `<div class="ai-sum">🔎 <b>XQ 籌碼</b>:主力買賣超 ${Number.isFinite(x.main) ? x.main.toLocaleString() + "張" : "—"}` +
+      (Number.isFinite(x.conc) ? `、集中度 ${x.conc}%` : "") +
+      (Number.isFinite(x.diff) ? `、買賣家數差 ${x.diff}` : "") +
+      ` — ${Number.isFinite(x.main) && x.main > 0 ? "與法人訊號同向,確認度提升 🔥" : "與法人訊號背離,留意主力出貨風險 ⚠"}</div>`
+    : "";
   det.innerHTML = `<td colspan="${colspan}">
     <div class="ai-title">🤖 智能摘要(依即時數據自動生成)</div>
     <div class="ai-sum">${esc(r.summary || "(無摘要)")}</div>
+    ${xqLine}
     <div class="news-title">📰 最新題材 / 新聞</div>
     <div class="news-box"><span class="spin"></span>抓取新聞中…</div>
   </td>`;
@@ -234,11 +289,142 @@ async function load(force) {
   }
 }
 
+// ---------- 代號查詢 ----------
+function scoreBadge(label, v) {
+  return `<span class="name">${label}</span> <span class="score ${cls(v)}">${v}</span>`;
+}
+
+function renderPicked(html) {
+  document.getElementById("picked-box").innerHTML = html
+    ? `<div class="picked">${html}</div>` : "";
+  const x = document.querySelector(".picked .close-x");
+  if (x) x.addEventListener("click", () => renderPicked(""));
+}
+
+async function doSearch() {
+  const q = document.getElementById("q").value.trim().toUpperCase();
+  if (!q) return;
+  const m = state.market;
+  renderPicked('<span class="spin"></span>查詢中…');
+
+  if (m === "etf") {
+    let data = state.cache.etf;
+    if (!data) {
+      try {
+        const res = await fetch("/api/screen?market=etf");
+        data = await res.json();
+        if (data.ok) state.cache.etf = data;
+      } catch {}
+    }
+    const r = data?.rows?.find(r => r.code.toUpperCase() === q);
+    renderPicked(r
+      ? `<div class="head"><span class="code">${esc(r.code)}</span> <span class="name">${esc(r.name)}</span>
+          <span>${r.insufficient ? '<span class="fail">資料不足</span>' : r.qualified ? '<span class="pass">✓ 達5%門檻</span>' : '<span class="fail">未達5%門檻</span>'}</span>
+          <span class="rank">年化${pct(r.cagrMain)} · 波動${pct(r.vol)} · 回撤-${r.maxDD}% · 風險調整${r.sharpe ?? "—"}</span>
+          <span class="close-x">✕</span></div>
+         <div class="sum">${esc(r.summary)}</div>`
+      : `<div class="head"><span class="err">查無「${esc(q)}」</span><span class="close-x">✕</span></div>
+         <div class="sum name">ETF 頁籤僅涵蓋精選23檔台美ETF,個股請切換到台股/美股頁籤查詢。</div>`);
+    return;
+  }
+
+  try {
+    const res = await fetch(`/api/screen?market=${m}&code=${encodeURIComponent(q)}`);
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || "API 回傳失敗");
+    if (data.picked) {
+      const r = data.picked;
+      renderPicked(
+        `<div class="head"><span class="code">${esc(r.code)}</span> <span class="name">${esc(r.name)}</span>
+          ${scoreBadge("籌碼", r.chipScore)} ${scoreBadge("估值", r.valScore)} ${scoreBadge("總分", r.totalScore)}
+          <span>${r.triggered ? '<span class="trig">★ 候選</span>' : '<span style="color:#5d6a80">觀察</span>'}</span>
+          <span class="rank">全universe排名 ${r.rank} / ${r.of}</span>
+          <span class="close-x">✕</span></div>
+         <div class="chips" style="margin-bottom:8px">${(r.reasons || []).map(x => '<span class="chip">' + esc(x) + "</span>").join("")}${xqChips(r, m)}</div>
+         <div class="sum">${esc(r.summary)}</div>`);
+    } else {
+      renderPicked(`<div class="head"><span class="err">${esc(data.pickedError || "查無「" + q + "」")}</span><span class="close-x">✕</span></div>`);
+    }
+  } catch (e) {
+    renderPicked(`<div class="head"><span class="err">查詢失敗:${esc(e.message)}</span><span class="close-x">✕</span></div>`);
+  }
+}
+document.getElementById("btn-q").addEventListener("click", doSearch);
+document.getElementById("q").addEventListener("keydown", (e) => { if (e.key === "Enter") doSearch(); });
+
+// ---------- XQ CSV 匯入(僅在瀏覽器本地解析與儲存,不上傳伺服器) ----------
+function xqStatusText() {
+  const el = document.getElementById("xq-status");
+  el.textContent = state.xq
+    ? `已載入 XQ 資料 ${Object.keys(state.xq.map).length} 檔(${state.xq.file};僅存於此瀏覽器)— 點此清除`
+    : "";
+  el.style.cursor = state.xq ? "pointer" : "default";
+}
+document.getElementById("xq-status").addEventListener("click", () => {
+  if (!state.xq) return;
+  state.xq = null; localStorage.removeItem("xqData"); xqStatusText();
+  if (state.cache[state.market]) render(state.cache[state.market]);
+});
+
+async function parseXqCsv(file) {
+  const buf = await file.arrayBuffer();
+  let text = new TextDecoder("utf-8", { fatal: false }).decode(buf);
+  if (!/代[碼號]/.test(text)) {
+    try { text = new TextDecoder("big5").decode(buf); } catch {}
+  }
+  const lines = text.split(/\r?\n/).filter(l => l.trim());
+  const hIdx = lines.findIndex(l => /代[碼號]/.test(l));
+  if (hIdx < 0) throw new Error("找不到含「代碼/代號」的表頭列,請用XQ的「匯出CSV」功能");
+  const delim = lines[hIdx].includes("\t") ? "\t" : ",";
+  const head = lines[hIdx].split(delim).map(s => s.replace(/["\s]/g, ""));
+  const iCode = head.findIndex(h => /代[碼號]/.test(h));
+  const iMain = head.findIndex(h => /主力/.test(h));
+  const iConc = head.findIndex(h => /集中/.test(h));
+  const iDiff = head.findIndex(h => /家數差/.test(h));
+  if (iMain < 0 && iConc < 0) throw new Error("表頭中找不到「主力買賣超」或「集中度」欄位,請在XQ自選股加入這些欄位後再匯出");
+  const numv = (s) => { const n = parseFloat(String(s ?? "").replace(/[",]/g, "")); return Number.isFinite(n) ? n : NaN; };
+  const map = {};
+  for (const line of lines.slice(hIdx + 1)) {
+    const c = line.split(delim);
+    const mcode = String(c[iCode] || "").match(/\d{4,6}/);
+    if (!mcode) continue;
+    map[mcode[0]] = {
+      main: iMain >= 0 ? numv(c[iMain]) : NaN,
+      conc: iConc >= 0 ? numv(c[iConc]) : NaN,
+      diff: iDiff >= 0 ? numv(c[iDiff]) : NaN,
+    };
+  }
+  if (!Object.keys(map).length) throw new Error("解析成功但無有效資料列");
+  return map;
+}
+
+document.getElementById("xq-file").addEventListener("change", async (e) => {
+  const f = e.target.files[0];
+  if (!f) return;
+  try {
+    const map = await parseXqCsv(f);
+    state.xq = { file: f.name, loadedAt: new Date().toISOString(), map };
+    localStorage.setItem("xqData", JSON.stringify(state.xq));
+    xqStatusText();
+    if (state.cache.tw) render(state.cache.tw);
+  } catch (err) {
+    document.getElementById("xq-status").textContent = "❌ " + err.message;
+  } finally {
+    e.target.value = "";
+  }
+});
+xqStatusText();
+
 document.querySelectorAll(".tab").forEach(t => t.addEventListener("click", () => {
   document.querySelectorAll(".tab").forEach(x => x.classList.remove("active"));
   t.classList.add("active");
   state.market = t.dataset.m;
   document.getElementById("notes").innerHTML = "";
+  renderPicked("");
+  document.getElementById("q").placeholder =
+    state.market === "tw" ? "輸入代號查總分:2330" :
+    state.market === "us" ? "輸入代號查總分:NVDA" : "輸入代號查ETF:0050 / VOO";
+  document.getElementById("xq-label").style.display = state.market === "tw" ? "" : "none";
   load(false);
 }));
 document.getElementById("btn-reload").addEventListener("click", () => load(true));

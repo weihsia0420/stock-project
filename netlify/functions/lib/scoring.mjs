@@ -34,6 +34,7 @@ export function scoreTaiwan(rows, opts = {}) {
     minTurnover = 300_000_000, // 流動性門檻:當日成交金額 >= 3億
     streakTrigger = 3,
     intensityTrigger = 0.05,
+    pick = null,
   } = opts;
 
   const universe = rows.filter(
@@ -79,7 +80,7 @@ export function scoreTaiwan(rows, opts = {}) {
     r.summary = buildTwSummary(r);
   }
 
-  return rank(universe);
+  return rank(universe, pick);
 }
 
 /**
@@ -88,7 +89,7 @@ export function scoreTaiwan(rows, opts = {}) {
  *          rs(相對SOXX 20日超額報酬), fwdPe }]
  */
 export function scoreUS(rows, opts = {}) {
-  const { wChip = 0.6, wVal = 0.4, valuationAvailable = true } = opts;
+  const { wChip = 0.6, wVal = 0.4, valuationAvailable = true, pick = null } = opts;
 
   const universe = rows.filter((r) => r.close > 0 && Number.isFinite(r.ret20));
 
@@ -122,26 +123,38 @@ export function scoreUS(rows, opts = {}) {
     r.summary = buildUsSummary(r);
   }
 
-  return rank(universe);
+  return rank(universe, pick);
 }
 
-/** 排序:triggered 優先,再依 totalScore 降冪;回傳前25名輕量欄位。 */
-function rank(universe) {
+const trimRow = (r) => ({
+  code: r.code ?? r.ticker,
+  name: r.name ?? "",
+  close: r.close,
+  chipScore: r.chipScore,
+  valScore: r.valScore,
+  totalScore: r.totalScore,
+  triggered: r.triggered,
+  reasons: r.reasons,
+  summary: r.summary ?? "",
+});
+
+/** 排序:triggered 優先,再依 totalScore 降冪。
+ *  回傳 { rows: 前25名, picked: 指定代號之完整結果(含全universe排名)|null } */
+function rank(universe, pick) {
   universe.sort((a, b) => {
     if (a.triggered !== b.triggered) return a.triggered ? -1 : 1;
     return b.totalScore - a.totalScore;
   });
-  return universe.slice(0, 25).map((r) => ({
-    code: r.code ?? r.ticker,
-    name: r.name ?? "",
-    close: r.close,
-    chipScore: r.chipScore,
-    valScore: r.valScore,
-    totalScore: r.totalScore,
-    triggered: r.triggered,
-    reasons: r.reasons,
-    summary: r.summary ?? "",
-  }));
+  let picked = null;
+  if (pick) {
+    const key = String(pick).trim().toUpperCase();
+    const idx = universe.findIndex(
+      (r) => String(r.code ?? r.ticker).toUpperCase() === key,
+    );
+    if (idx >= 0)
+      picked = { ...trimRow(universe[idx]), rank: idx + 1, of: universe.length };
+  }
+  return { rows: universe.slice(0, 25).map(trimRow), picked };
 }
 
 // ================= 智能摘要(規則式,由實際數據生成) =================
@@ -149,6 +162,24 @@ function rank(universe) {
 export function buildTwSummary(r) {
   const lots = Math.round(r.netSum / 1000);
   const p = [];
+  // 基本面/題材(TWSE 月營收彙總:單月與累計年增率)
+  if (r.industry) p.push(`【${r.industry}】`);
+  if (Number.isFinite(r.revYoY)) {
+    p.push(
+      `${r.revLabel ?? "最新"}單月營收年${r.revYoY >= 0 ? "增" : "減"}${Math.abs(r.revYoY).toFixed(1)}%` +
+        (Number.isFinite(r.revAccYoY)
+          ? `、累計年${r.revAccYoY >= 0 ? "增" : "減"}${Math.abs(r.revAccYoY).toFixed(1)}%`
+          : "") + "。",
+    );
+    if (r.revYoY >= 20 && (r.revAccYoY ?? 0) >= 10)
+      p.push("營收動能強勁,基本面支持籌碼訊號——這是推薦置信度最高的組合。");
+    else if (r.revYoY >= 0)
+      p.push("營運穩健成長。");
+    else
+      p.push("⚠ 營收年減,法人買盤與基本面背離,可能是預期落底行情,需自行判斷題材(見下方新聞)。");
+  } else {
+    p.push("(未取得月營收資料)");
+  }
   p.push(
     `外資+投信近${r.nets.length}日合計${lots >= 0 ? "買超" : "賣超"}約${Math.abs(lots).toLocaleString()}張` +
       (r.streak >= 2 ? `、已連續${r.streak}日站在買方` : "") +
@@ -179,6 +210,13 @@ export function buildTwSummary(r) {
 }
 
 export function buildUsSummary(r) {
+  let fund = "";
+  if (r.theme) fund += `【題材】${r.theme}。`;
+  if (Number.isFinite(r.epsGrowth)) {
+    fund +=
+      `市場預估未來EPS較近12個月${r.epsGrowth >= 0 ? "成長" : "衰退"}${Math.abs(r.epsGrowth * 100).toFixed(0)}%` +
+      (r.epsGrowth >= 0.15 ? ",獲利動能為推薦主因之一。" : r.epsGrowth >= 0 ? ",獲利溫和成長。" : ",⚠ 獲利預估下修中,訊號僅屬技術面。");
+  }
   const p = [];
   if (Number.isFinite(r.rs))
     p.push(
@@ -188,7 +226,7 @@ export function buildUsSummary(r) {
     p.push(`近5日量能為20日均量的${r.volSurge.toFixed(2)}倍`);
   if (Number.isFinite(r.mom20))
     p.push(`股價位於20日均線${r.mom20 >= 0 ? "之上" : "之下"}${Math.abs(r.mom20 * 100).toFixed(1)}%`);
-  let s = p.join(",") + `;綜合籌碼替代分數位居樣本第${r.chipScore}百分位。`;
+  let s = fund + p.join(",") + `;綜合籌碼替代分數位居樣本第${r.chipScore}百分位。`;
   s += r.fwdPe > 0
     ? `Forward P/E ${r.fwdPe.toFixed(1)}倍,估值分${r.valScore}(相對樣本${r.valScore >= 60 ? "偏便宜" : r.valScore >= 40 ? "中性" : "偏貴"})。`
     : "估值資料暫缺,以中性50分計。";

@@ -1,6 +1,9 @@
 // 純函式單元測試(無網路依賴):node tests/scoring.test.mjs
 import assert from "node:assert/strict";
-import { percentileRank, streakOf, scoreTaiwan, scoreUS } from "../netlify/functions/lib/scoring.mjs";
+import {
+  percentileRank, streakOf, scoreTaiwan, scoreUS,
+  cagrFrom, annualizedVol, maxDrawdown, scoreETF,
+} from "../netlify/functions/lib/scoring.mjs";
 
 // percentileRank
 assert.equal(percentileRank([1, 2, 3, 4], 4), 0.75);
@@ -49,5 +52,39 @@ assert.ok(us[1].valScore > us[0].valScore, "P/E較低者估值分應較高");
 const usDeg = scoreUS(usRows, { valuationAvailable: false });
 assert.equal(usDeg[0].valScore, 50);
 assert.equal(usDeg[1].valScore, 50);
+
+// 智能摘要:應包含關鍵敘述
+assert.ok(tw[0].summary.includes("連續5日"), "台股摘要應描述連買天數");
+assert.ok(tw[0].summary.includes("候選"), "台股摘要應含結論");
+assert.ok(us[0].summary.includes("SOXX"), "美股摘要應含相對強弱");
+
+// cagrFrom:每月+1%,60個月 → 年化約12.68%
+const monthly1pct = Array.from({ length: 61 }, (_, i) => 100 * 1.01 ** i);
+assert.ok(Math.abs(cagrFrom(monthly1pct, 60) - (1.01 ** 12 - 1)) < 1e-9);
+assert.ok(Number.isNaN(cagrFrom([100, 101], 60)), "資料不足應回NaN");
+
+// annualizedVol:固定報酬 → 波動0
+const flat = Array.from({ length: 25 }, (_, i) => 100 * 1.005 ** i);
+assert.ok(annualizedVol(flat) < 1e-9);
+
+// maxDrawdown:100→150→75 → 50%
+assert.equal(maxDrawdown([100, 150, 75, 120]), 0.5);
+
+// scoreETF:高報酬者達標且排前;短歷史標記資料不足
+const etf = scoreETF([
+  { code: "GOOD", name: "好ETF", market: "US", type: "市值型", adj: monthly1pct },          // ~12.7%/yr
+  { code: "FLATX", name: "平ETF", market: "TW", type: "高股息", adj: Array.from({ length: 61 }, (_, i) => 100 * 1.002 ** i) }, // ~2.4%/yr
+  { code: "NEWX", name: "新ETF", market: "TW", type: "科技", adj: Array.from({ length: 14 }, (_, i) => 100 + i) },
+]);
+const good = etf.find((e) => e.code === "GOOD");
+const flatE = etf.find((e) => e.code === "FLATX");
+const newE = etf.find((e) => e.code === "NEWX");
+assert.equal(good.qualified, true);
+assert.ok(Math.abs(good.cagr5 - 12.7) < 0.1);
+assert.equal(flatE.qualified, false);
+assert.equal(newE.insufficient, true);
+assert.equal(etf[0].code, "GOOD", "達標者應排最前");
+assert.ok(good.summary.includes("達到5%年化門檻"));
+assert.ok(flatE.summary.includes("未達5%年化門檻"));
 
 console.log("ALL SCORING TESTS PASSED");

@@ -2,7 +2,7 @@
 // 資料源全為免費公開端點(TWSE OpenAPI / TWSE RWD / Yahoo Finance chart)。
 // 僅為研究用訊號清單,非投資建議;不做任何繞過 rate limit 的設計。
 import type { Context, Config } from "@netlify/functions";
-import { scoreTaiwan, scoreUS } from "./lib/scoring.mjs";
+import { scoreTaiwan, scoreUS, scoreETF } from "./lib/scoring.mjs";
 
 const UA = { "User-Agent": "Mozilla/5.0 (stock-project research tool)" };
 
@@ -224,19 +224,109 @@ async function screenUS() {
   };
 }
 
+// ---------------- ETF 長期穩健篩選 ----------------
+const ETF_LIST: { code: string; yahoo: string; name: string; market: "TW" | "US"; type: string }[] = [
+  { code: "0050",   yahoo: "0050.TW",   name: "元大台灣50",        market: "TW", type: "市值型" },
+  { code: "006208", yahoo: "006208.TW", name: "富邦台50",          market: "TW", type: "市值型" },
+  { code: "0056",   yahoo: "0056.TW",   name: "元大高股息",        market: "TW", type: "高股息" },
+  { code: "00878",  yahoo: "00878.TW",  name: "國泰永續高股息",    market: "TW", type: "高股息" },
+  { code: "00713",  yahoo: "00713.TW",  name: "元大台灣高息低波",  market: "TW", type: "高息低波" },
+  { code: "00692",  yahoo: "00692.TW",  name: "富邦公司治理",      market: "TW", type: "市值/ESG" },
+  { code: "00850",  yahoo: "00850.TW",  name: "元大臺灣ESG永續",   market: "TW", type: "ESG" },
+  { code: "00881",  yahoo: "00881.TW",  name: "國泰台灣5G+",       market: "TW", type: "科技主題" },
+  { code: "00891",  yahoo: "00891.TW",  name: "中信關鍵半導體",    market: "TW", type: "半導體" },
+  { code: "00919",  yahoo: "00919.TW",  name: "群益台灣精選高息",  market: "TW", type: "高股息" },
+  { code: "00929",  yahoo: "00929.TW",  name: "復華台灣科技優息",  market: "TW", type: "科技高息" },
+  { code: "VOO",  yahoo: "VOO",  name: "Vanguard S&P 500",      market: "US", type: "市值型" },
+  { code: "VTI",  yahoo: "VTI",  name: "Vanguard 全美市場",     market: "US", type: "市值型" },
+  { code: "VT",   yahoo: "VT",   name: "Vanguard 全球市場",     market: "US", type: "全球分散" },
+  { code: "QQQ",  yahoo: "QQQ",  name: "Invesco 那斯達克100",   market: "US", type: "科技成長" },
+  { code: "SCHD", yahoo: "SCHD", name: "Schwab 高股息成長",     market: "US", type: "高股息" },
+  { code: "VIG",  yahoo: "VIG",  name: "Vanguard 股息成長",     market: "US", type: "股息成長" },
+  { code: "VYM",  yahoo: "VYM",  name: "Vanguard 高股息",       market: "US", type: "高股息" },
+  { code: "DIA",  yahoo: "DIA",  name: "SPDR 道瓊工業",         market: "US", type: "市值型" },
+  { code: "IWM",  yahoo: "IWM",  name: "iShares 羅素2000",      market: "US", type: "小型股" },
+  { code: "VGT",  yahoo: "VGT",  name: "Vanguard 資訊科技",     market: "US", type: "科技" },
+  { code: "SOXX", yahoo: "SOXX", name: "iShares 半導體",        market: "US", type: "半導體" },
+  { code: "JEPI", yahoo: "JEPI", name: "JPMorgan 股票收益",     market: "US", type: "收益型" },
+];
+
+async function fetchMonthlyAdj(yahoo: string): Promise<number[]> {
+  const j = await fetchJson(
+    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahoo)}?range=10y&interval=1mo`,
+    {}, 10000,
+  );
+  const r = j?.chart?.result?.[0];
+  const adj: number[] = r?.indicators?.adjclose?.[0]?.adjclose ?? r?.indicators?.quote?.[0]?.close ?? [];
+  return adj.filter((x: number) => Number.isFinite(x) && x > 0);
+}
+
+async function screenETFs() {
+  const settled = await Promise.allSettled(
+    ETF_LIST.map(async (e) => ({ ...e, adj: await fetchMonthlyAdj(e.yahoo) })),
+  );
+  const rows = settled
+    .filter((s): s is PromiseFulfilledResult<any> => s.status === "fulfilled" && s.value.adj.length >= 13)
+    .map((s) => s.value);
+  if (rows.length < 5) throw new Error("ETF 歷史資料取得失敗(Yahoo Finance 無回應)");
+  const failed = ETF_LIST.filter((e) => !rows.some((r: any) => r.code === e.code)).map((e) => e.code);
+
+  return {
+    market: "ETF",
+    asOf: new Date().toISOString().slice(0, 10),
+    universeSize: rows.length,
+    rows: scoreETF(rows, { threshold: 0.05 }),
+    notes: [
+      "年化報酬以還原股息之調整價(adjusted close)計算 = 含息總報酬;✓達標 = 年化報酬≥5%且成立滿3年",
+      "排序:達標者優先,再依風險調整報酬(年化報酬÷年化波動)由高至低——「穩健」看的是這一欄,不是報酬絕對值",
+      "近5年涵蓋2024多頭與2025回檔,數字已含一次完整循環;過去績效不保證未來報酬",
+      ...(failed.length ? [`⚠ 本次未能取得:${failed.join("、")}(資料源無回應)`] : []),
+    ],
+  };
+}
+
+// ---------------- 新聞題材(Yahoo Finance Search) ----------------
+async function fetchNews(q: string) {
+  const j = await fetchJson(
+    `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(q)}&newsCount=6&quotesCount=0`,
+    {}, 6000,
+  );
+  return (j?.news ?? []).slice(0, 6).map((n: any) => ({
+    title: n.title,
+    publisher: n.publisher,
+    link: n.link,
+    time: n.providerPublishTime ? new Date(n.providerPublishTime * 1000).toISOString() : null,
+  }));
+}
+
 // ---------------- handler ----------------
 export default async (req: Request, _context: Context) => {
   const url = new URL(req.url);
-  const market = (url.searchParams.get("market") ?? "tw").toLowerCase();
   const headers = {
     "Content-Type": "application/json; charset=utf-8",
     "Netlify-CDN-Cache-Control": "public, s-maxage=1800, stale-while-revalidate=7200",
   };
   try {
-    const data = market === "us" ? await screenUS() : await screenTaiwan();
+    if (url.pathname.endsWith("/news")) {
+      const q = url.searchParams.get("q") ?? "";
+      if (!q) throw new Error("missing q");
+      const news = await fetchNews(q);
+      return new Response(
+        JSON.stringify({ ok: true, generatedAt: new Date().toISOString(), news }),
+        { headers },
+      );
+    }
+    const market = (url.searchParams.get("market") ?? "tw").toLowerCase();
+    const data =
+      market === "us" ? await screenUS()
+      : market === "etf" ? await screenETFs()
+      : await screenTaiwan();
+    const cache = market === "etf"
+      ? "public, s-maxage=21600, stale-while-revalidate=86400" // ETF長期數據:快取6小時
+      : headers["Netlify-CDN-Cache-Control"];
     return new Response(
       JSON.stringify({ ok: true, generatedAt: new Date().toISOString(), ...data }),
-      { headers },
+      { headers: { ...headers, "Netlify-CDN-Cache-Control": cache } },
     );
   } catch (e: any) {
     return new Response(
@@ -247,5 +337,5 @@ export default async (req: Request, _context: Context) => {
 };
 
 export const config: Config = {
-  path: "/api/screen",
+  path: ["/api/screen", "/api/news"],
 };

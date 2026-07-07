@@ -476,7 +476,13 @@ async function screenTaiwan(pick: string | null = null) {
     rows: scored.rows,
     picked: scored.picked,
     pickedError: pick && !scored.picked
-      ? `查無「${pick}」——查詢範圍為上市+上櫃普通股,且需通過流動性門檻(當日成交金額≥3億)${ds.otcCount ? "" : ";⚠ 本次上櫃資料源未取得,僅涵蓋上市"}`
+      ? `查無「${pick}」——查詢範圍為上市+上櫃普通股,且需通過流動性門檻(當日成交金額≥3億)${
+          ds.otcCount
+            ? ""
+            : `;⚠ 本次上櫃資料源未取得【診斷】報價:${ds.otcDiag?.quotes};法人:取得${ds.otcDiag?.instiDays ?? 0}日${
+                (ds.otcDiag?.instiErrors ?? []).length ? ",錯誤:" + ds.otcDiag.instiErrors.join(" | ") : ""
+              }`
+        }`
       : null,
     notes: [
       "涵蓋範圍:上市(TWSE)+ 上櫃(TPEX)普通股;籌碼分數:外資+投信近5日連買天數×買超強度之橫斷面百分位",

@@ -231,9 +231,19 @@ async function fetchPrevYearEndCloses(): Promise<Record<string, number>> {
   });
 }
 
-/** 上櫃三大法人日資料:TPEX 新版 JSON API,西元/民國日期格式各試一次。 */
+/** TPEX 舊版 php API 的固定欄序(aaData 無 fields,自行對應)。 */
+const LEGACY_TPEX_FIELDS = [
+  "代號", "名稱",
+  "外資及陸資(不含外資自營商)-買進股數", "外資及陸資(不含外資自營商)-賣出股數", "外資及陸資(不含外資自營商)-買賣超股數",
+  "外資自營商-買進股數", "外資自營商-賣出股數", "外資自營商-買賣超股數",
+  "投信-買進股數", "投信-賣出股數", "投信-買賣超股數",
+];
+
+/** 上櫃三大法人日資料:新版 JSON API(西元/民國)→ 舊版 php API 備援。
+ *  回傳 { days, diag }:diag 記錄失敗原因,顯示於前端說明區以利除錯。 */
 async function fetchTpexInstiDays(maxDays = 5) {
   const days: { date: string; tbl: any }[] = [];
+  const diag: string[] = [];
   for (let i = 0; i < 12 && days.length < maxDays; i++) {
     const d = new Date(Date.now() + 8 * 3600_000 - i * 86400_000);
     const iso = d.toISOString().slice(0, 10);
@@ -250,12 +260,24 @@ async function fetchTpexInstiDays(maxDays = 5) {
           (t: any) => Array.isArray(t?.fields) && Array.isArray(t?.data) && t.data.length,
         );
         if (tbl) { got = tbl; break; }
-      } catch {}
+        diag.push(`new(${dateParam}):回應無資料表`);
+      } catch (e: any) { diag.push(`new(${dateParam}):${String(e?.message ?? e).slice(0, 80)}`); }
+    }
+    if (!got) {
+      try {
+        const j = await fetchJson(
+          `https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php?l=zh-tw&se=EW&t=D&o=json&d=${encodeURIComponent(roc)}`,
+          {}, 6000,
+        );
+        const aa = j?.aaData ?? j?.tables?.[0]?.data;
+        if (Array.isArray(aa) && aa.length) got = { fields: LEGACY_TPEX_FIELDS, data: aa };
+        else diag.push(`legacy(${roc}):空回應`);
+      } catch (e: any) { diag.push(`legacy(${roc}):${String(e?.message ?? e).slice(0, 80)}`); }
     }
     if (got) days.push({ date: iso.replace(/-/g, ""), tbl: got });
     if (days.length < maxDays && i < 11) await sleep(200);
   }
-  return days.sort((a, b) => a.date.localeCompare(b.date));
+  return { days: days.sort((a, b) => a.date.localeCompare(b.date)), diag: diag.slice(0, 6) };
 }
 
 type ChipAcc = { name: string; nets: number[]; foreignSum: number; trustSum: number; otc?: boolean };
@@ -319,18 +341,22 @@ async function buildTwDataset() {
   const prevYE = await fetchPrevYearEndCloses().catch(() => ({} as Record<string, number>));
 
   // 上市(TWSE)與上櫃(TPEX)法人序列平行進行(不同主機,各自序列化)
-  const [t86Days, tpexDays] = await Promise.all([fetchT86Days(), fetchTpexInstiDays()]);
+  const [t86Days, tpexInsti] = await Promise.all([fetchT86Days(), fetchTpexInstiDays()]);
+  const tpexDays = tpexInsti.days;
   if (t86Days.length < 3)
     throw new Error(`TWSE T86 資料不足(近12日僅取得${t86Days.length}日,可能為證交所流量限制,請1-2分鐘後再試)`);
 
   let revErr: string | null = null;
+  let tpexQuotesErr: string | null = null;
   const [priceAll, valAll, revL, tpexQuotes, tpexPE, revO] = await Promise.all([
     fetchJson("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"),
     fetchJson("https://openapi.twse.com.tw/v1/exchangeReport/BWIBBU_ALL"),
     fetchJson("https://openapi.twse.com.tw/v1/opendata/t187ap05_L", {}, 12000).catch(
       (e) => { revErr = String(e?.message ?? e); return []; },
     ),
-    fetchJson("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes", {}, 10000).catch(() => []),
+    fetchJson("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes", {}, 10000).catch(
+      (e) => { tpexQuotesErr = String(e?.message ?? e); return []; },
+    ),
     fetchJson("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_peratio_analysis", {}, 10000).catch(() => []),
     fetchJson("https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap05_O", {}, 12000).catch(() => []),
   ]);
@@ -432,11 +458,16 @@ async function buildTwDataset() {
     prevYECount: Object.keys(prevYE).length,
     otcCount,
     otcChipDays: tpexDays.length,
+    otcDiag: {
+      quotes: tpexQuotesErr ?? `OK(${Array.isArray(tpexQuotes) ? tpexQuotes.length : 0}檔)`,
+      instiDays: tpexDays.length,
+      instiErrors: tpexInsti.diag,
+    },
   };
 }
 
 async function screenTaiwan(pick: string | null = null) {
-  const ds: any = await cachedJson(`tw-dataset2-${taipeiDate(0)}`, 25 * 60_000, buildTwDataset);
+  const ds: any = await cachedJson(`tw-dataset3-${taipeiDate(0)}`, 25 * 60_000, buildTwDataset);
   const scored = scoreTaiwan(ds.rows, { pick });
   return {
     market: "TW",
@@ -451,7 +482,7 @@ async function screenTaiwan(pick: string | null = null) {
       "涵蓋範圍:上市(TWSE)+ 上櫃(TPEX)普通股;籌碼分數:外資+投信近5日連買天數×買超強度之橫斷面百分位",
       ds.otcCount > 0
         ? `上櫃已納入 ${ds.otcCount} 檔(法人資料 ${ds.otcChipDays} 個交易日);上櫃YTD暫無(缺去年底基準)`
-        : "⚠ 上櫃(TPEX)資料源本次未取得,僅涵蓋上市",
+        : `⚠ 上櫃(TPEX)資料源本次未取得,僅涵蓋上市【診斷】報價:${ds.otcDiag?.quotes};法人:取得${ds.otcDiag?.instiDays ?? 0}日${(ds.otcDiag?.instiErrors ?? []).length ? ",錯誤:" + ds.otcDiag.instiErrors.join(" | ") : ""}`,
       "估值分數:P/E 橫斷面便宜度70% + 殖利率排名30%",
       ds.revCount > 0
         ? `基本面:月營收彙總已載入 ${ds.revCount} 家(公告期間未申報者摘要會註明);常見標的另有人工題材標籤`

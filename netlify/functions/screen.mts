@@ -511,7 +511,7 @@ async function buildTwDataset() {
 }
 
 async function screenTaiwan(pick: string | null = null) {
-  const ds: any = await cachedJson(`tw-dataset6-${taipeiDate(0)}`, 25 * 60_000, buildTwDataset);
+  const ds: any = await cachedJson(`tw-dataset7-${taipeiDate(0)}`, 25 * 60_000, buildTwDataset);
   const scored = scoreTaiwan(ds.rows, { pick });
   return {
     market: "TW",

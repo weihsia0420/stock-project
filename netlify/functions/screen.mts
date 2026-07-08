@@ -244,9 +244,12 @@ function fmToken(): string {
 
 async function fmQuery(dataset: string, params: string, timeoutMs = 9000): Promise<any[]> {
   const tok = fmToken();
+  // FinMind v4 認證:優先用 Authorization: Bearer 標頭(官方現行方式),
+  // 同時附上 token 查詢參數以相容舊版。無 token 會回 400(v4 強制認證)。
+  const init: RequestInit = tok ? { headers: { Authorization: `Bearer ${tok}` } } : {};
   const j = await fetchJson(
     `${FINMIND}?dataset=${dataset}&${params}${tok ? `&token=${encodeURIComponent(tok)}` : ""}`,
-    {}, timeoutMs,
+    init, timeoutMs,
   );
   if (j?.status && j.status !== 200) throw new Error(`FinMind ${dataset}:${j?.msg ?? j.status}`);
   return Array.isArray(j?.data) ? j.data : [];

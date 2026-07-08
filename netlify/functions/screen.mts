@@ -239,7 +239,16 @@ async function fetchPrevYearEndCloses(): Promise<Record<string, number>> {
 const FINMIND = "https://api.finmindtrade.com/api/v4/data";
 
 function fmToken(): string {
-  try { return (globalThis as any).Netlify?.env?.get?.("FINMIND_TOKEN") ?? ""; } catch { return ""; }
+  // process.env 為 Node runtime 最可靠來源;Netlify.env.get 作為備援
+  try {
+    const p = (globalThis as any).process?.env?.FINMIND_TOKEN;
+    if (p) return String(p);
+  } catch {}
+  try {
+    const n = (globalThis as any).Netlify?.env?.get?.("FINMIND_TOKEN");
+    if (n) return String(n);
+  } catch {}
+  return "";
 }
 
 async function fmQuery(dataset: string, params: string, timeoutMs = 9000): Promise<any[]> {
@@ -258,28 +267,29 @@ async function fmQuery(dataset: string, params: string, timeoutMs = 9000): Promi
 const isoDate = (offsetDays = 0) =>
   new Date(Date.now() + 8 * 3600_000 - offsetDays * 86400_000).toISOString().slice(0, 10);
 
-/** FinMind 法人買賣超:近9個日曆日逐日平行查(全市場),取最近5個交易日。 */
+/** FinMind 法人買賣超:單一日期區間請求(全市場,一次抓回近~8交易日),
+ *  依日期分組後取最近 maxDays 個交易日。省 token:整段只 1 次呼叫。 */
 async function fetchFinMindInstiDays(maxDays = 5) {
   const diag: string[] = [];
-  const settled = await Promise.allSettled(
-    Array.from({ length: 9 }, (_, i) => {
-      const d = isoDate(i);
-      return fmQuery(
-        "TaiwanStockInstitutionalInvestorsBuySell",
-        `start_date=${d}&end_date=${d}`, 9500,
-      ).then((rows) => ({ d, rows }));
-    }),
-  );
-  const days: { d: string; rows: any[] }[] = [];
-  for (const s of settled) {
-    if (s.status === "fulfilled") {
-      if (s.value.rows.length) days.push(s.value);
-    } else {
-      diag.push(String((s.reason as any)?.message ?? s.reason).slice(0, 90));
-    }
+  let rows: any[] = [];
+  try {
+    rows = await fmQuery(
+      "TaiwanStockInstitutionalInvestorsBuySell",
+      `start_date=${isoDate(11)}&end_date=${isoDate(0)}`, 12000,
+    );
+  } catch (e: any) {
+    diag.push(String(e?.message ?? e).slice(0, 130));
   }
-  days.sort((a, b) => a.d.localeCompare(b.d));
-  return { days: days.slice(-maxDays), diag: [...new Set(diag)].slice(0, 3) };
+  const byDate = new Map<string, any[]>();
+  for (const r of rows) {
+    const d = String(r.date);
+    (byDate.get(d) ?? byDate.set(d, []).get(d)!).push(r);
+  }
+  const days = [...byDate.entries()]
+    .map(([d, rs]) => ({ d, rows: rs }))
+    .sort((a, b) => a.d.localeCompare(b.d))
+    .slice(-maxDays);
+  return { days, diag };
 }
 
 type ChipAcc = { name: string; nets: number[]; foreignSum: number; trustSum: number; otc?: boolean };
@@ -501,7 +511,7 @@ async function buildTwDataset() {
 }
 
 async function screenTaiwan(pick: string | null = null) {
-  const ds: any = await cachedJson(`tw-dataset5-${taipeiDate(0)}`, 25 * 60_000, buildTwDataset);
+  const ds: any = await cachedJson(`tw-dataset6-${taipeiDate(0)}`, 25 * 60_000, buildTwDataset);
   const scored = scoreTaiwan(ds.rows, { pick });
   return {
     market: "TW",
